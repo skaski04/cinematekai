@@ -1,0 +1,31 @@
+{
+  "name": "CinematekAI",
+  "short_name": "CinematekAI",
+  "description": "KI-Empfehlungen für die eigene Jellyfin-Bibliothek",
+  "lang": "de",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0A0A0C",
+  "theme_color": "#0A0A0C",
+  "icons": [
+    {
+      "src": "/cinematek_logo_512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/cinematek_logo_512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/cinematek_logo_128.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    }
+  ]
+}

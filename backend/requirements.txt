@@ -1,0 +1,23 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+httpx==0.27.2
+sqlmodel==0.0.22
+pyyaml==6.0.2
+python-multipart==0.0.12
+chromadb==0.5.23
+apscheduler==3.10.4
+
+# Direkt importiert, kamen bisher nur als Abhaengigkeit mit: numpy ueber
+# chromadb (embeddings.py rechnet damit), pytz ueber APScheduler (cron.py,
+# Rueckfall fuer die Zeitzone). Ohne Versionsnummer, damit weiter chromadb
+# bzw. APScheduler bestimmen, welche Version passt. Die Aufloesung bleibt
+# dieselbe wie vorher, nur steht die Abhaengigkeit jetzt da, wo sie gebraucht
+# wird.
+numpy
+pytz
+# Zeitzonendaten fuer zoneinfo (Zeitplan, Pruefung der Zeitzone in settings.py).
+# Das offizielle python:3.12-slim bringt die Systemdaten mit; das Paket ist der
+# Rueckfall, falls das Basis-Image einmal wechselt. Ohne Daten findet zoneinfo
+# gar keine Zone, und settings.py lehnt dann jede Zeitzone als unbekannt ab.
+# Nur ASCII in dieser Datei: pip liest sie je nach System nicht als UTF-8.
+tzdata

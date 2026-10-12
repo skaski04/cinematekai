@@ -1,0 +1,102 @@
+# Builds the image from the Dockerfile in the repository root and publishes it
+# to the GitHub Container Registry as ghcr.io/<owner>/cinematekai.
+#
+# Triggers:
+#   - push of a version tag such as v1.0.0  -> tags 1.0.0, 1.0, 1 and latest
+#   - manual run (Actions -> "Publish Docker image" -> Run workflow)
+#     -> tag = name of the branch it was started on (on a branch never "latest")
+#
+# Release:   git tag v1.0.0
+#            git push origin v1.0.0
+# (Push tags one at a time: with more than three tags in one push GitHub
+# starts no workflow.)
+#
+# The first publish creates the package as private. To let others pull it
+# without a login: GitHub -> your profile -> Packages -> cinematekai ->
+# Package settings -> Change visibility -> Public. A public package cannot be
+# made private again (only deleted).
+
+name: Publish Docker image
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+# The built-in token needs nothing but read access to the code and write
+# access to packages; no personal access token and no secret to maintain.
+permissions:
+  contents: read
+  packages: write
+
+# Two publishes of the same ref must not overwrite each other's tags.
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      # ghcr.io only accepts lower-case image names, but an account name may
+      # contain capitals (ghcr.io/${{ github.repository_owner }}/cinematekai
+      # would then be rejected). Lower-case it once and reuse the result.
+      - name: Work out the image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/cinematekai" >> "$GITHUB_OUTPUT"
+
+      # Only needed for more than one platform (see "platforms" below).
+      # Uncomment together with the arm64 line.
+      # - name: Set up QEMU
+      #   uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to the GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          # "latest" is set explicitly below, so switch off the automatic one.
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=ref,event=branch
+          labels: |
+            org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # To publish for ARM as well (Raspberry Pi, Apple Silicon servers),
+          # enable the QEMU step above and use "linux/amd64,linux/arm64".
+          # Before doing so, check that the Python packages in
+          # backend/requirements.txt have prebuilt arm64 wheels; if one has
+          # not, add build-essential to the Dockerfile. An emulated arm64
+          # build is also much slower than the amd64 one.
+          platforms: linux/amd64
+          # No build cache on purpose: this workflow only builds version tags,
+          # and GitHub does not let a run for one tag restore the cache of
+          # another tag. A cache would be written on every release and never read.

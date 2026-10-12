@@ -1,0 +1,247 @@
+/* Gemeinsame Bausteine fuer Einrichtung (/setup) und Einstellungen
+   (/admin/einstellungen) samt AnbieterFormular.
+
+   Global statt im Komponenten-CSS, weil dieselben Felder, Knoepfe und
+   Meldungen auf beiden Seiten und in der Komponente vorkommen — scoped stuende
+   alles dreimal da und liefe auseinander. Das Praefix "e-" haelt die Klassen
+   von den bestehenden Seiten fern: die Filmliste hat z. B. ein eigenes .feld,
+   das ein globales .feld sonst mit veraendern wuerde. */
+
+.e-karte {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s-5);
+  box-sizing: border-box;
+  min-width: 0;
+}
+.e-karte > h2,
+.e-karte > header h2 {
+  font-family: var(--font-display);
+  font-size: 24px;
+  margin: 0 0 var(--s-2);
+  color: var(--text);
+}
+.e-karte + .e-karte { margin-top: 0; }
+
+.e-text {
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0 0 var(--s-4);
+  max-width: var(--lese);
+}
+.e-text strong { color: var(--text); font-weight: 600; }
+
+/* Felder: auf schmalen Schirmen untereinander und volle Breite, sobald Platz
+   ist nebeneinander. min(100%, …) verhindert, dass ein Feld auf 390px breiter
+   wird als die Karte und eine Scrollleiste erzwingt. */
+.e-raster {
+  display: grid;
+  gap: var(--s-4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  margin-bottom: var(--s-4);
+}
+.e-feld {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.e-feld.breit { grid-column: 1 / -1; }
+.e-feld > label,
+.e-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+.e-feld input:not([type=checkbox]),
+.e-feld select,
+.e-eingabe {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.e-feld input::placeholder { color: var(--text-dim); }
+.e-feld input:focus,
+.e-feld select:focus,
+.e-eingabe:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--gold-wash);
+}
+.e-feld input:disabled,
+.e-feld select:disabled { opacity: 0.6; }
+.e-klein {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.e-haken {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 44px;
+  font-size: 14px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.e-haken input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; }
+
+/* Schluesselfeld: Eingabe plus Hinweis, ob schon einer gespeichert ist. */
+.e-gesetzt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--success);
+}
+.e-gesetzt.leer { color: var(--text-dim); }
+
+.e-knoepfe {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: center;
+  margin-top: var(--s-2);
+}
+.e-knopf {
+  min-height: 40px;
+  padding: 0 var(--s-4);
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+              background var(--dur-fast) var(--ease);
+}
+.e-knopf:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.e-knopf:disabled { opacity: 0.5; cursor: not-allowed; }
+.e-knopf.laeuft:disabled { cursor: progress; }
+.e-knopf.primaer {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.e-knopf.primaer:hover:not(:disabled) { background: var(--gold-bright); color: var(--bg); }
+.e-knopf.gefahr { color: var(--danger); border-color: rgba(196, 98, 98, 0.4); }
+.e-knopf.gefahr:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+.e-knopf.leise { border-color: transparent; padding: 0 var(--s-2); }
+.e-knopf.leise:hover:not(:disabled) { border-color: transparent; }
+
+/* Meldungen stehen in einem aria-live-Bereich, der auch leer im DOM bleibt —
+   sonst bekommt ein Screenreader die erste Meldung nicht mit. */
+.e-meldung {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: var(--s-2) 0 0;
+  min-height: 0;
+  overflow-wrap: anywhere;
+}
+.e-meldung:empty { margin: 0; }
+.e-meldung.ok { color: var(--success); }
+.e-meldung.fehler { color: var(--danger); }
+.e-meldung.info { color: var(--text-muted); }
+
+.e-warnung {
+  background: var(--gold-wash);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: var(--s-3) var(--s-4);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  margin: 0 0 var(--s-4);
+}
+.e-warnung.gefahr { border-left-color: var(--danger); background: rgba(196, 98, 98, 0.08); }
+
+/* Aufklappbare Zusatzfelder. */
+.e-mehr {
+  border-top: 1px solid var(--border);
+  padding-top: var(--s-3);
+  margin-top: var(--s-3);
+}
+.e-mehr > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  list-style: none;
+}
+.e-mehr > summary::-webkit-details-marker { display: none; }
+.e-mehr > summary::before {
+  content: '▸\FE0E';
+  color: var(--accent);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.e-mehr[open] > summary::before { transform: rotate(90deg); }
+.e-mehr > summary:hover { color: var(--accent); }
+.e-mehr > :not(summary) { margin-top: var(--s-3); }
+
+/* Fakten in Zeilen, z. B. der Status der Einbettung. */
+.e-fakten {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: var(--s-3) var(--s-4);
+  margin: 0 0 var(--s-4);
+}
+.e-fakten div { min-width: 0; }
+.e-fakten dt {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.e-fakten dd {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.e-balken {
+  width: 100%;
+  height: 8px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: var(--r-full);
+  background: var(--layer-3);
+  overflow: hidden;
+}
+.e-balken::-webkit-progress-bar { background: var(--layer-3); border-radius: var(--r-full); }
+.e-balken::-webkit-progress-value { background: var(--accent); border-radius: var(--r-full); }
+.e-balken::-moz-progress-bar { background: var(--accent); border-radius: var(--r-full); }
+
+@media (max-width: 560px) {
+  .e-karte { padding: var(--s-4); }
+  .e-karte > h2,
+  .e-karte > header h2 { font-size: 21px; }
+  /* Auf dem Handy volle Breite: leichter zu treffen, und nichts bricht
+     unschoen in eine zweite Zeile mit einem einzelnen Knopf. */
+  .e-knoepfe .e-knopf { flex: 1 1 auto; min-height: 44px; }
+  .e-knoepfe .e-knopf.leise { flex: 0 0 auto; }
+}

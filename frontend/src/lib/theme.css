@@ -1,0 +1,152 @@
+/* CinematekAI Corporate Design tokens */
+:root {
+  --bg: #0A0A0C;
+  --surface: #141418;
+  --surface-light: #1C1C22;
+  --accent: #C8A96E;
+  --accent-muted: #9A7D4E;
+  --accent-subtle: rgba(200, 169, 110, 0.08);
+  --accent-ring: rgba(200, 169, 110, 0.35);
+  --text: #E8E6E1;
+  /* Angehoben von #8A8880 zusammen mit --text-dim: --text-dim musste bis an
+     die AA-Grenze hoch, und mit 5,42 gegen 5,57 waren die beiden Stufen nicht
+     mehr zu unterscheiden. Jetzt liegt die mittlere Stufe klar darueber:
+     7,12:1 auf --bg, 6,48:1 auf --layer-2, 5,96:1 auf --layer-3. */
+  --text-muted: #9E9B92;
+  /* Angehoben von #807E76. Der alte Wert erreichte seine 4,86:1 nur gegen
+     --bg; das Redesign legt dieselbe Schriftfarbe auch auf die helleren
+     Flaechen, und dort fiel sie unter AA (4,43:1 auf --layer-2, 4,07:1 auf
+     --layer-3 — betrifft z. B. das Aufklappmenue der Suche). Jetzt: 5,42:1
+     auf --bg, 5,28:1 auf --layer-1, 4,94:1 auf --layer-2, 4,53:1 auf
+     --layer-3 — die dunkelste Stufe, die auf allen benutzten Flaechen AA
+     haelt. --layer-4 kommt als Hintergrund nirgends vor; taucht er auf,
+     braucht der Text dort eine hellere Farbe (dim erreicht nur 4,00:1). */
+  --text-dim: #88867D;
+  --border: rgba(200, 169, 110, 0.12);
+  --border-strong: rgba(200, 169, 110, 0.25);
+  /* Angehoben von #b85c5c (4,33:1 auf --layer-1). Die Fehlerzeile im
+     Chat-Dock sitzt genau auf --layer-1, deshalb dort gemessen: jetzt
+     4,83:1 auf --layer-1 und 4,52:1 auf --layer-2. */
+  --danger: #C46262;
+  --success: #6ea86e;
+  /* ——— Ergaenzt fuer das Redesign. Rein additiv: alle Tokens oben bleiben
+     unveraendert, damit die bestehenden Seiten weiterlaufen. ——— */
+
+  /* Flaechen. Vorher gab es drei Stufen (bg/surface/surface-light); fuer
+     gestapelte Ebenen (Reihe auf Karte auf Overlay) reichten sie nicht. */
+  --layer-0: #08080A;
+  --layer-1: #0E0E12;
+  --layer-2: #16161C;
+  --layer-3: #1E1E26;
+  --layer-4: #282832;
+
+  /* Gold gestaffelt. --accent bleibt der Vollton und ist ab jetzt dem
+     Abspielen-Knopf vorbehalten; alles andere nimmt Rand oder Waschung. */
+  --gold-bright: #E3C98F;
+  --gold-wash: rgba(200, 169, 110, 0.08);
+  --gold-ring: rgba(200, 169, 110, 0.32);
+
+  /* Breiten der Detailseiten. Vorher stand auf jeder Seite eine eigene feste
+     Zahl: 1200px links klebend beim Film, 1200px mittig bei der Serie. Auf
+     einem 4K-Schirm (3840px) blieben damit zwei Drittel der Flaeche leer, und
+     die beiden Seiten sassen an verschiedenen Stellen. Jetzt waechst die Seite
+     mit dem Schirm — nur der Fliesstext behaelt seine Lesebreite. */
+  --seite-max: 2400px;                   /* Aeusserste Breite; darueber zentriert */
+  --seite-pad: clamp(16px, 3.5vw, 72px); /* Seitenrand, waechst mit dem Schirm */
+  /* Die Posterspalte beginnt bei den bisherigen 240px — auf Tablets bleibt
+     also alles wie gehabt — und waechst erst ab etwa 1500px Schirmbreite. */
+  --spalte-poster: clamp(240px, 16vw, 360px);
+  /* Fliesstext: rund 75 Zeichen je Zeile. "ch" ist die Breite der Null und in
+     DM Sans deutlich breiter als ein Durchschnittsbuchstabe — nachgemessen
+     sind es 9,58px gegen 6,96px bei 14px Schriftgroesse. 55ch ergeben damit
+     527px und 75 Zeichen; bei 15px sind es 564px und wieder 75 Zeichen, weil
+     beide Masse mit der Schriftgroesse wachsen. */
+  --lese: 55ch;
+  /* Umrandete Kaesten (Begruendung, Reihenfortschritt, Banner, Folgenliste).
+     Breiter als der Fliesstext, weil darin noch der Match-Ring (96px) und der
+     Innenabstand stecken — der Text darin landet so wieder bei --lese. */
+  --kasten: 720px;
+
+  /* Radien. Bisher lag ueberall 2px oder 4px fest im Komponenten-CSS. */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-full: 999px;
+
+  /* Abstaende (4er-Raster). */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px; --s-5: 24px;
+  --s-6: 32px; --s-7: 48px; --s-8: 64px; --s-9: 96px;
+
+  /* Tiefe. Auf dunklem Grund traegt Schatten die Hierarchie, nicht der Rand. */
+  --elev-1: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --elev-2: 0 8px 28px rgba(0, 0, 0, 0.55);
+  --elev-3: 0 24px 64px rgba(0, 0, 0, 0.65);
+
+  /* Bewegung. */
+  --dur-fast: 120ms;
+  --dur-base: 240ms;
+  --dur-slow: 480ms;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --font-display: 'Cormorant Garamond', serif;
+  --font-ui: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+a { color: var(--accent); }
+a:hover { color: var(--text); }
+
+button { font-family: var(--font-ui); }
+
+::selection { background: var(--accent); color: var(--bg); }
+
+/* Scrollbar (webkit) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--surface-light); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-muted); }
+
+
+/* Nur fuer Screenreader sichtbar — Seitenueberschriften ohne visuelle Aenderung. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* Einheitlicher Fokusring. Vorher: Navigation gold, Karten Browser-Standard,
+   bei der Serie der Woche gar nicht vom Ruhezustand zu unterscheiden. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Wer im Betriebssystem weniger Bewegung eingestellt hat, bekommt sie auch
+   hier nicht. Gilt global, damit neue Komponenten es nicht je einzeln regeln. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Zeichen wie ♥ und ▶ sind im Unicode-Standard zugleich Schrift- und
+   Emoji-Zeichen. Ohne Vorgabe ersetzen iOS und viele Androids sie durch ein
+   buntes Bild — der goldene Abspielen-Knopf bekaeme ein blaues Kaestchen.
+   Diese Regel erzwingt ueberall die Schriftdarstellung. Weil aeltere Browser
+   sie noch nicht kennen, steht an diesen Zeichen im Markup zusaetzlich der
+   unsichtbare Text-Selektor U+FE0E. */
+html { font-variant-emoji: text; }

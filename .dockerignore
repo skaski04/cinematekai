@@ -1,0 +1,30 @@
+# Build-Kontext ist der Repo-Wurzelordner - auf dem Server also der ganze
+# Projektordner mit Datenbank, Vektoren und Logs. Alles hier Genannte schickt
+# Docker gar nicht erst an den Build. Das haelt den Bau schnell und sorgt
+# dafuer, dass weder Daten noch Geheimnisse versehentlich im Image landen.
+#
+# Muster ohne **/ gelten nur im Wurzelordner. Deshalb **/node_modules usw.:
+# sonst kaeme frontend/node_modules vom Windows-Rechner mit und ueberschriebe
+# die im Image fuer Linux installierten Pakete.
+
+**/node_modules
+**/.svelte-kit
+frontend/build
+**/__pycache__
+**/*.py[cod]
+
+# Laufzeitdaten (DB, Chroma, Logs, Berichte)
+data
+logs
+reports
+
+# Enthaelt API-Schluessel; auf dem Server liegen daneben oft Sicherungen wie
+# config.yaml.bak-<datum>, die dasselbe enthalten.
+config.yaml*
+**/*.bak*
+
+# Wegwerf-Skripte, gehoeren nicht ins Image
+backend/dev
+
+.git
+**/*.tar.gz

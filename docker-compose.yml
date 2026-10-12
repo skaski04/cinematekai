@@ -1,0 +1,48 @@
+# CinematekAI - self-hosted movie and series recommendations for Jellyfin.
+#
+# A single container: the backend serves the API under /api/* and the prebuilt
+# web interface on the same port. All settings live in the database under
+# ./data and are managed in the browser - the setup wizard at /setup on first
+# start, later Admin -> Settings. Start it with:
+#
+#     docker compose up -d
+#
+# and open http://<your-server>:8095 in the browser.
+services:
+  cinematekai:
+    image: ghcr.io/skaski04/cinematekai:latest
+    # To build the image yourself from this repository instead of pulling it,
+    # uncomment the next line and start with "docker compose up -d --build".
+    # build: .
+    container_name: cinematekai
+    ports:
+      - "8095:8095"
+    environment:
+      # Your own time zone (e.g. Europe/London, America/New_York). It is also
+      # the default zone for the daily background jobs (changeable in the app).
+      - TZ=Europe/Berlin
+    volumes:
+      # Database, vector index and settings (including API keys). Back this
+      # folder up; it is everything the app needs to keep.
+      - ./data:/app/data
+      # Optional, read-only, only for local trailers: CinematekAI plays a
+      # trailer stored as <movie folder>/backdrops/trailer.mp4 next to the
+      # movie file (Jellyfin does not index it). The right-hand side must be
+      # the path under which Jellyfin itself sees your media, because the file
+      # paths from Jellyfin's API are used unchanged. /media is the default;
+      # if Jellyfin uses another path, mount it there and set "Media path in
+      # the container" in Admin -> Settings to match.
+      # - /path/to/media:/media:ro
+    # Also brings the container back up after the host reboots, not only
+    # after a crash.
+    restart: unless-stopped
+    # Recommended upper bound. In normal operation the backend stayed at about
+    # 150 MB; the limit is deliberately generous and meant to catch a runaway
+    # embedding or vector-index run, not to squeeze everyday use.
+    # mem_limit: 4g
+    # Without these options the json log grows without limit.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

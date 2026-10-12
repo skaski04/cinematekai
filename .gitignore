@@ -1,0 +1,39 @@
+# Laufzeitdaten - gehoeren ins Backup, nicht in die Versionskontrolle
+data/
+logs/
+reports/
+
+# Alte Einstellungsdatei: enthaelt den Jellyfin-API-Key und das Session-Secret.
+# Seit Oktober 2026 stehen die Einstellungen in der Datenbank (unter data/);
+# die Datei wird nur noch einmalig eingelesen, wenn eine alte Installation sie
+# mitbringt. Eine Vorlage gibt es nicht mehr.
+config.yaml
+config.yaml.*
+
+# Geheimnisse und lokale Umgebung
+.env
+.env.*
+!.env.example
+
+# Eigene lokale Ergaenzungen zur mitgelieferten docker-compose.yml (Pfade,
+# Ports, Ressourcengrenzen). docker compose laedt eine Datei dieses Namens
+# automatisch zusaetzlich; sie soll nicht im Repository landen.
+docker-compose.override.yml
+
+# Build-Artefakte
+__pycache__/
+*.py[cod]
+node_modules/
+.svelte-kit/
+build/
+*.tar.gz
+.venv/
+venv/
+
+# Lokale Werkzeug-Einstellungen
+.claude/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
