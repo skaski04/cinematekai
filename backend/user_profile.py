@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Optional
 from sqlmodel import select
 from database import get_session, Movie, Series, SeriesProgress, WatchState
+import sichtbarkeit
 
 
 W_FAVORITE = 2.0
@@ -122,6 +123,16 @@ def build_profile(user_id: int) -> dict:
         # Pull all movies + series referenced, plus library for fallback
         all_movies = s.exec(select(Movie)).all()
         all_series = s.exec(select(Series)).all()
+
+    # Nur Titel, die das Konto (noch) sehen darf. Das Profil landet als Text
+    # in den Prompts (Chat, Kurator, Begruendung) und nennt Lieblingstitel
+    # beim Namen; ein Titel, dessen Freigabe entzogen wurde, wuerde sonst
+    # weiter als "dein Lieblingsfilm" auftauchen. Ohne gespeicherte Menge
+    # bleibt alles wie bisher.
+    sicht = sichtbarkeit.laden(user_id)
+    if sicht.aktiv:
+        ws_rows = [ws for ws in ws_rows if sicht.film(ws.movie_id)]
+        sp_rows = [sp for sp in sp_rows if sicht.serie(sp.series_id)]
 
     movie_by_id = {m.id: m for m in all_movies}
     series_by_id = {ser.id: ser for ser in all_series}

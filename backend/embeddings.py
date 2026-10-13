@@ -26,6 +26,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from typing import Iterable
 
 import chromadb
 from sqlmodel import func, select
@@ -164,7 +165,15 @@ def _t(schluessel: str, sprache: str | None = None, **werte) -> str:
 
 
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+# Chroma meldet sonst anonyme Nutzungsdaten an einen Analysedienst des
+# Herstellers - aus einer App, die bewusst nichts nach draussen schickt, was
+# der Admin nicht eingerichtet hat. Ausdruecklich hier abgeschaltet, nicht nur
+# per ANONYMIZED_TELEMETRY im Dockerfile: das gilt sonst nicht fuer einen
+# Start ausserhalb des Containers (Entwicklung, eigene Installation).
+_client = chromadb.PersistentClient(
+    path=str(CHROMA_DIR),
+    settings=chromadb.config.Settings(anonymized_telemetry=False),
+)
 
 
 # ── Je Modell eine eigene Sammlung ─────────────────────────────────────────
@@ -998,14 +1007,21 @@ def backfill_type_metadata() -> dict:
     return {"tagged": len(new_ids), "total": len(ids)}
 
 
-def search_similar(movie_id: str, k: int = 15) -> list[dict]:
-    """Find k movies most similar to the given movie by embedding."""
+def search_similar(movie_id: str, k: int = 15,
+                   exclude_ids: Iterable[str] | None = None) -> list[dict]:
+    """Find k movies most similar to the given movie by embedding.
+
+    ``exclude_ids``: weitere IDs, die nicht vorkommen duerfen - die fuer den
+    Nutzer verborgenen Titel (sichtbarkeit.Sicht.verborgen). Uebergeben statt
+    hinterher gefiltert, damit die Suche ihr Fenster entsprechend vergroessert
+    und trotzdem k Treffer liefert."""
     with get_session() as s:
         m = s.get(Movie, movie_id)
     if not m:
         return []
     text = anbieter.praefix_anfrage(movie_to_text(m), _stand()[0])
-    return search_by_text(text, k=k + 1, exclude_ids=[movie_id], _raw_query=True)[:k]
+    ohne = {movie_id} | set(exclude_ids or ())
+    return search_by_text(text, k=k + 1, exclude_ids=ohne, _raw_query=True)[:k]
 
 
 # Deutsche Frage- und Fuellwoerter. nomic-embed-text ist englisch-optimiert;

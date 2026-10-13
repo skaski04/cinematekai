@@ -23,6 +23,9 @@ Verteilt wird so:
     ``config.STATIC_DIR`` — oder ``index.html``, damit ein Neuladen auf
     /movies/123 die Seite zeigt statt 404 (SPA-Fallback).
 
+Jede HTTP-Antwort, egal aus welchem Zweig, bekommt dabei dieselben
+Sicherheitskoepfe (``_SICHERHEITS_KOEPFE``).
+
 Websockets gibt es in CinematekAI nicht; der Chat streamt per SSE ueber
 normales HTTP.
 """
@@ -71,6 +74,46 @@ _TYPEN = {
 
 _NICHT_GEBAUT = "Oberfläche nicht gebaut"
 
+# Sicherheitskoepfe fuer jede HTTP-Antwort - API, /health, /metrics und
+# Oberflaeche gleichermassen, deshalb hier im Verteiler und nicht in main.py:
+#   nosniff         der Browser haelt sich an den angegebenen Inhaltstyp und
+#                   raet nicht selbst. Sonst koennte eine Antwort, die als Text
+#                   oder Bild gemeint ist, als Skript oder HTML laufen.
+#   SAMEORIGIN      keine fremde Seite darf die App in einen Rahmen laden und
+#                   den Nutzer dort unbemerkt klicken lassen (Clickjacking).
+#   same-origin     Adressen aus der App (Film-IDs, Suchbegriffe) gehen beim
+#                   Klick auf einen Link nach draussen (TMDB, Seerr, Jellyfin
+#                   unter anderer Adresse) nicht als Referer mit.
+# Bewusst keine Content-Security-Policy: die muesste zu Svelte, den
+# eingebetteten Stilen und den Bildquellen passen und laesst sich ohne
+# Browsertest jeder Seite nicht verlaesslich einstellen. Eine falsche Regel
+# legte die Oberflaeche still.
+_SICHERHEITS_KOEPFE = (
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"SAMEORIGIN"),
+    (b"referrer-policy", b"same-origin"),
+)
+
+
+def _mit_sicherheitskoepfen(send):
+    """``send`` so umwickeln, dass der Antwortbeginn die Koepfe traegt.
+
+    Reine ASGI-Huelle statt Starlette-Middleware: der Verteiler ist selbst
+    keine Starlette-App, und so gelten die Koepfe auch fuer gestreamte
+    Antworten (Chat per SSE, Trailer) ohne sie zu puffern. Setzt eine Antwort
+    einen der Koepfe selbst, bleibt ihr Wert stehen.
+    """
+    async def senden(nachricht):
+        if nachricht["type"] == "http.response.start":
+            koepfe = list(nachricht.get("headers") or [])
+            vorhanden = {bytes(name).lower() for name, _ in koepfe}
+            for name, wert in _SICHERHEITS_KOEPFE:
+                if name not in vorhanden:
+                    koepfe.append((name, wert))
+            nachricht = {**nachricht, "headers": koepfe}
+        await send(nachricht)
+    return senden
+
 
 # ---------------------------------------------------------------------------
 # Verteiler
@@ -81,6 +124,8 @@ async def app(scope, receive, send):
     if art == "lifespan":
         await _backend.app(scope, receive, send)
         return
+    if art == "http":
+        send = _mit_sicherheitskoepfen(send)
 
     pfad = scope.get("path") or "/"
     if pfad == _API or pfad.startswith(_API + "/"):
@@ -103,7 +148,8 @@ def _ohne_praefix(scope: dict) -> dict:
     ``root_path`` bekommt das /api dazu. Fuer das Routing in FastAPI zaehlt nur
     ``path``; ``root_path`` sorgt dafuer, dass die automatische API-Doku unter
     /api/docs ihre openapi.json unter /api/openapi.json sucht und nicht bei
-    der Oberflaeche.
+    der Oberflaeche. (Die Doku ist seit 1.0.1 standardmaessig aus und nur mit
+    CINEMATEKAI_API_DOCS=1 da, siehe main.py.)
     """
     neu = dict(scope)
     rest = scope["path"][len(_API):] or "/"

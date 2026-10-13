@@ -3,9 +3,13 @@ uvicorn[standard]==0.32.0
 httpx==0.27.2
 sqlmodel==0.0.22
 pyyaml==6.0.2
-python-multipart==0.0.12
 chromadb==0.5.23
 apscheduler==3.10.4
+
+# python-multipart stand hier bis 1.0.0. FastAPI braucht es nur fuer
+# Formular- und Datei-Parameter (Form, File, UploadFile), und die nimmt kein
+# Endpunkt an - alles kommt als JSON. Ein Paket weniger, das Sicherheits-
+# updates braucht. Erst wieder aufnehmen, wenn ein Endpunkt Formulare liest.
 
 # Direkt importiert, kamen bisher nur als Abhaengigkeit mit: numpy ueber
 # chromadb (embeddings.py rechnet damit), pytz ueber APScheduler (cron.py,

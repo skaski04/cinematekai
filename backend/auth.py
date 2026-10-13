@@ -2,6 +2,7 @@
 import secrets, logging
 from datetime import datetime, timedelta
 from typing import Optional
+import httpx
 from fastapi import Cookie, HTTPException, Depends
 from sqlmodel import select
 from database import User, UserSession, get_session
@@ -15,16 +16,29 @@ COOKIE_NAME = "cinematekai_session"
 
 # Meldungen fuer die Oberflaeche. Erst beim Ausloesen gebaut (texte.waehle),
 # in der Sprache der Anfrage.
+# Die Anmeldefehler nennen bewusst keine Einzelheiten aus Jellyfin: bis 1.0.0
+# stand hier der Text der httpx-Ausnahme, und der enthielt die interne
+# Jellyfin-Adresse - fuer jeden lesbar, der die Anmeldeseite erreicht. Die
+# Einzelheiten stehen jetzt nur im Protokoll. Unterscheidbar bleibt, was der
+# Nutzer wissen muss: Zugangsdaten falsch oder Jellyfin gerade nicht da.
 _T = {
     "de": {
-        "anmeldung": "Jellyfin auth failed: {fehler}",
+        "anmeldung": "Anmeldung fehlgeschlagen.",
+        "anmeldung_falsch": "Anmeldung fehlgeschlagen: Benutzername oder Passwort stimmt nicht.",
+        "anmeldung_jf_weg": "Anmeldung fehlgeschlagen: Jellyfin ist gerade nicht erreichbar. "
+                            "Bitte später noch einmal versuchen.",
+        "anmeldung_jf_status": "Anmeldung fehlgeschlagen: Jellyfin hat mit HTTP {status} geantwortet.",
         "erster_login": "Erster Login muss ein Jellyfin-Admin sein.",
         "allowlist": "Benutzer nicht auf der Allowlist. Admin muss dich hinzufügen.",
         "nicht_eingeloggt": "Nicht eingeloggt",
         "nur_admins": "Nur Admins",
     },
     "en": {
-        "anmeldung": "Jellyfin sign-in failed: {fehler}",
+        "anmeldung": "Sign-in failed.",
+        "anmeldung_falsch": "Sign-in failed: the username or password is wrong.",
+        "anmeldung_jf_weg": "Sign-in failed: Jellyfin can't be reached right now. "
+                            "Please try again later.",
+        "anmeldung_jf_status": "Sign-in failed: Jellyfin answered with HTTP {status}.",
         "erster_login": "The first sign-in must be a Jellyfin admin.",
         "allowlist": "User is not on the allowlist. An admin needs to add you.",
         "nicht_eingeloggt": "Not signed in",
@@ -86,8 +100,28 @@ def login(username: str, password: str) -> dict:
         # das als 503 mit Verweis auf /setup. Als 401 saehe es aus, als
         # stimme das Passwort nicht.
         raise
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status in (400, 401, 403):
+            # Dieselbe Einteilung wie bei der Einrichtung (einstellungen_api):
+            # Jellyfin weist falsche Zugangsdaten je nach Version mit einem
+            # dieser drei ab. Nur dieser Fall bleibt eine 401; bis 1.0.0 war
+            # es jeder Fehler, und ein ausgefallenes Jellyfin sah dadurch aus
+            # wie ein falsches Passwort.
+            log.info("Anmeldung von %r: Jellyfin lehnt ab (HTTP %s)", username, status)
+            raise HTTPException(401, _text("anmeldung_falsch"))
+        log.warning("Anmeldung von %r: Jellyfin antwortet mit HTTP %s: %s", username, status, e)
+        raise HTTPException(502, _text("anmeldung_jf_status", status=status))
+    except httpx.HTTPError as e:
+        # Verbindung abgelehnt, Zeitueberschreitung, Name nicht aufloesbar:
+        # 502, weil nicht die Anfrage falsch ist, sondern Jellyfin dahinter
+        # fehlt. Der Text der Ausnahme nennt die Adresse und bleibt im Log.
+        log.warning("Anmeldung von %r: Jellyfin nicht erreichbar: %s", username, e)
+        raise HTTPException(502, _text("anmeldung_jf_weg"))
     except Exception as e:
-        raise HTTPException(401, _text("anmeldung", fehler=e))
+        # Alles andere (unlesbare Antwort o. Ae.) - ebenfalls ohne Einzelheiten.
+        log.warning("Anmeldung von %r fehlgeschlagen: %r", username, e)
+        raise HTTPException(502, _text("anmeldung"))
 
     jf_user_id = jf["jellyfin_user_id"]
 

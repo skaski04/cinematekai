@@ -12,7 +12,10 @@
 # ---------------------------------------------------------------------------
 # Stufe 1: Oberflaeche
 # ---------------------------------------------------------------------------
-FROM node:20-alpine AS oberflaeche
+# Node 22 (LTS) statt 20: Node 20 bekommt seit Ende April 2026 keine
+# Sicherheitsupdates mehr. Betrifft nur das Bauen - im fertigen Image steckt
+# kein Node.
+FROM node:22-alpine AS oberflaeche
 WORKDIR /src
 
 # Erst nur die Paketlisten: solange sie sich nicht aendern, nimmt Docker die
@@ -58,10 +61,14 @@ COPY --from=oberflaeche /src/build ./static
 # config.yaml gelesen (settings.py); fehlt die Datei, startet alles trotzdem.
 # PYTHONUNBUFFERED, damit Log-Zeilen sofort in `docker logs` stehen und nicht
 # erst, wenn ein Puffer voll ist.
+# ANONYMIZED_TELEMETRY=False schaltet die Nutzungsstatistik von Chroma ab.
+# embeddings.py tut das schon selbst; die Variable gilt zusaetzlich fuer
+# alles, was Chroma im Container sonst noch anlegt.
 ENV CINEMATEKAI_DATA=/app/data \
     CINEMATEKAI_STATIC=/app/static \
     CINEMATEKAI_CONFIG=/app/config.yaml \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    ANONYMIZED_TELEMETRY=False
 
 EXPOSE 8095
 

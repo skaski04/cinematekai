@@ -137,6 +137,36 @@ class WatchState(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class SichtbarerTitel(SQLModel, table=True):
+    """Ein Film oder eine Serie, den bzw. die ein Konto laut Jellyfin sehen
+    darf (Bibliotheksfreigaben, Altersgrenze, gesperrte Tags; siehe
+    sichtbarkeit.py).
+
+    Eine Zeile je Person und Titel statt einer JSON-Liste: so lassen sich die
+    seitenweise abgerufenen Listen (limit/offset) direkt im SQL filtern, und
+    der Bild-Proxy prueft einen einzelnen Titel ueber den Primaerschluessel,
+    statt fuer jedes Poster die ganze Menge zu laden. ``item_id`` steht vor
+    ``media_type``, damit die Abfrage "Person + Titel" den Index nutzt.
+    """
+    user_id: int = Field(foreign_key="user.id", primary_key=True)
+    item_id: str = Field(primary_key=True)
+    media_type: str = Field(primary_key=True)        # "movie" | "series"
+
+
+class SichtbarkeitStand(SQLModel, table=True):
+    """Ob und wann die sichtbare Menge einer Person je Typ gespeichert wurde.
+
+    Trennt "noch nie abgeglichen" (keine Zeile: kein Filter, Verhalten wie bis
+    1.0.0) von "abgeglichen, sieht nichts" (Zeile mit ``anzahl`` 0). Ohne diese
+    Unterscheidung saehe ein frisch aktualisiertes System bis zum ersten Sync
+    fuer alle eine leere Bibliothek.
+    """
+    user_id: int = Field(foreign_key="user.id", primary_key=True)
+    media_type: str = Field(primary_key=True)        # "movie" | "series"
+    anzahl: int = 0
+    synced_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class SyncState(SQLModel, table=True):
     id: int = Field(default=1, primary_key=True)
     last_sync_at: Optional[datetime] = None

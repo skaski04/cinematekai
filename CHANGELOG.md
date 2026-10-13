@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-10-13
+
+### Security
+
+- The image proxy (`/api/image/...`) now requires a signed-in user, accepts only Jellyfin item IDs, encodes them
+  before passing them on and returns raster images only. Before, anyone who could reach the port could make the
+  backend send arbitrary requests to Jellyfin with its admin key.
+- `/api/status` and `/api/ollama/status` require a signed-in user.
+- Failed sign-ins no longer reveal the internal Jellyfin address; wrong credentials and an unreachable Jellyfin
+  are reported separately.
+- CORS is off by default (interface and API share one origin); set `CINEMATEKAI_CORS_REGEX` only if you serve the
+  interface from another address.
+- Security headers on every response (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`).
+- The interactive API documentation is off by default; `CINEMATEKAI_API_DOCS=1` turns it on.
+- Telemetry of the bundled vector database (Chroma) is switched off.
+
+### Added
+
+- **Per-account visibility**: everyone only sees and gets recommended what their own Jellyfin account may see
+  (library access, parental rating, blocked tags) - in lists, search, recommendations, chat, images and trailers.
+  The allowed titles are read at every sync; until the first sync after the update nothing is filtered.
+- The running version is shown in the credits and returned by `/health`.
+
+### Changed
+
+- The web interface is built with Node 22 (Node 20 is end-of-life).
+- Local trailers use the current Jellyfin item route instead of a deprecated one.
+- Removed the unused `python-multipart` dependency.
+
 ## [1.0.0] - 2026-10-12
 
 First public release.

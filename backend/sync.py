@@ -15,8 +15,24 @@ from jellyfin import (
     fetch_user_series_data, fetch_user_next_up,
     sprachen_aus_streams,
 )
+import sichtbarkeit
 
 log = logging.getLogger("cinematekai.sync")
+
+
+def _sichtbarkeit_auffrischen(media_type: str) -> dict:
+    """Nach dem Bibliotheks-Sync die sichtbaren Mengen aller Personen
+    nachziehen (siehe sichtbarkeit.auffrischen), damit gerade aufgenommene
+    Titel nicht bis zum naechsten eigenen Abgleich fuer alle verborgen sind.
+
+    Ein Fehler hier laesst den Bibliotheks-Sync nicht scheitern: dessen Daten
+    sind schon geschrieben, und jede Person behaelt ihre bisherige Menge."""
+    try:
+        return sichtbarkeit.auffrischen(media_type)
+    except Exception as e:
+        log.warning("Sichtbarkeit (%s) nach dem Bibliotheks-Sync nicht aufgefrischt: %s",
+                    media_type, e)
+        return {"ok": 0, "fehler": -1}
 
 
 def sync_library() -> dict:
@@ -122,8 +138,10 @@ def sync_library() -> dict:
 
     log.info("Library sync: +%d ~%d -%d = %d (%d mit Tonsprache)",
              added, updated, removed, len(seen_ids), mit_tonsprache)
+    sicht = _sichtbarkeit_auffrischen(sichtbarkeit.FILM)
     return {"added": added, "updated": updated, "removed": removed, "total": len(seen_ids),
-            "collections": len(col_map), "mit_tonsprache": mit_tonsprache}
+            "collections": len(col_map), "mit_tonsprache": mit_tonsprache,
+            "sichtbarkeit": sicht}
 
 
 def sync_series_library() -> dict:
@@ -192,8 +210,9 @@ def sync_series_library() -> dict:
         s.commit()
 
     log.info("Series sync: +%d ~%d -%d = %d", added, updated, removed, len(seen_ids))
+    sicht = _sichtbarkeit_auffrischen(sichtbarkeit.SERIE)
     return {"added": added, "updated": updated, "removed": removed,
-            "total": len(seen_ids)}
+            "total": len(seen_ids), "sichtbarkeit": sicht}
 
 
 def sync_episodes_for_series(series_id: str) -> dict:
@@ -376,6 +395,12 @@ def sync_series_progress(user_id: int) -> dict:
         jf_user_id = user.jellyfin_user_id
 
     raw_series = fetch_user_series_data(jf_user_id)
+    # Dieselbe Antwort ist die Liste ALLER Serien, die Jellyfin diesem Konto
+    # zeigt (mit ?userId= wendet es Bibliotheksfreigaben, Altersgrenze und
+    # gesperrte Tags selbst an) - also genau die sichtbare Menge. Gespeichert
+    # wird sie vor dem Rest, damit ein spaeterer Fehler (NextUp, Folgen) die
+    # Rechte nicht auf dem alten Stand laesst.
+    sichtbarkeit.speichern(user_id, sichtbarkeit.SERIE, [it.get("Id") for it in raw_series])
     next_up = fetch_user_next_up(jf_user_id)
 
     with get_session() as s:
@@ -478,6 +503,10 @@ def sync_watch_state(user_id: int) -> dict:
         return {"error": "user hat keine jellyfin_user_id"}
 
     items = fetch_user_items(jf_user_id)
+    # fetch_user_items liefert ALLE Filme, die Jellyfin diesem Konto zeigt -
+    # gesehene wie ungesehene, mit den Rechten des Kontos (Bibliotheks-
+    # freigaben, Altersgrenze, gesperrte Tags). Das ist die sichtbare Menge.
+    sichtbarkeit.speichern(user_id, sichtbarkeit.FILM, [raw.get("Id") for raw in items])
     upserted = 0
 
     with get_session() as s:

@@ -20,6 +20,7 @@ from typing import Optional
 from sqlmodel import select
 
 import anbieter
+import sichtbarkeit
 import texte
 from database import get_session, Movie, WatchState, RecommendationCache
 from embeddings import search_by_text, search_similar, normalize_user_query, skala
@@ -854,7 +855,10 @@ def _rewatch_candidates(user_id: int, exclude_ids: set[str], n: int) -> list[dic
             select(WatchState).where(WatchState.user_id == user_id,
                                      WatchState.played == True)  # noqa: E712
         ).all()
-    rows = [w for w in rows if w.movie_id not in exclude_ids]
+    # Gesehen heisst nicht sichtbar: wurde die Freigabe spaeter entzogen,
+    # steht die WatchState-Zeile noch da.
+    sicht = sichtbarkeit.laden(user_id)
+    rows = [w for w in rows if w.movie_id not in exclude_ids and sicht.film(w.movie_id)]
     if not rows:
         return []
     rows.sort(key=lambda w: (w.last_played is not None,
@@ -1004,6 +1008,30 @@ def _recent_film_of_day_ids(user_id: int, days: int = 3,
     return out
 
 
+def _auswahl_sichtbar(payload: dict, sicht) -> bool:
+    """Eine gespeicherte Tagesauswahl auf das zuschneiden, was die Person
+    JETZT sehen darf. Die Auswahl kann aelter sein als der letzte Abgleich
+    ihrer Rechte (Zwischenspeicher, Stand von gestern bei ausgefallener
+    Einbettung). Weitere Vorschlaege, Ausreisser und die Rangliste fuer
+    "Neuer Vorschlag" werden gefiltert.
+
+    Rueckgabe: ob der Film des Tages selbst sichtbar ist. Ist er es nicht,
+    verwirft der Aufrufer die Auswahl und rechnet neu - ein anderer Titel an
+    seiner Stelle passte nicht zu Begruendung und Kurator-Text daneben.
+    """
+    if not sicht.aktiv or not isinstance(payload, dict):
+        return True
+    for feld in ("thematic", "exploration"):
+        if isinstance(payload.get(feld), list):
+            payload[feld] = sicht.filtern(payload[feld])
+    if isinstance(payload.get("ranking"), list):
+        # Die Rangliste des Kurators enthaelt nur Filme (siehe curator).
+        payload["ranking"] = [e for e in payload["ranking"]
+                              if isinstance(e, dict) and sicht.film(e.get("movie_id"))]
+    fod = payload.get("film_of_day")
+    return not fod or sicht.eintrag(fod)
+
+
 def invalidate_user_cache(user_id: int):
     with get_session() as s:
         rows = s.exec(
@@ -1034,7 +1062,14 @@ def daily_candidates(user_id: int, profile: dict, hidden: set[str]) -> list[dict
     die Abfrage mit der Zahl gesehener Titel, und TMDB-Treffer kommen hinzu.
     """
     seen = profile["seen_ids"]
-    raw = search_by_text(profile_to_query_text(profile), k=60 + len(seen))
+    # Fuer das Konto verborgene Titel gar nicht erst holen: als exclude_ids
+    # vergroessert die Suche ihr Fenster um genau diese Treffer, der Pool
+    # bleibt also so gross wie bei einem Konto ohne Einschraenkung. Als Teil
+    # von ``hidden`` fallen sie auch aus dem TMDB-Anteil (_blend_candidates).
+    verborgen = sichtbarkeit.laden(user_id).verborgen()
+    hidden = set(hidden) | verborgen
+    raw = search_by_text(profile_to_query_text(profile), k=60 + len(seen),
+                         exclude_ids=verborgen)
     unseen = [r for r in raw if r["movie_id"] not in seen and r["movie_id"] not in hidden]
     return _blend_candidates(user_id, profile, unseen, hidden)
 
@@ -1088,13 +1123,28 @@ def _blend_candidates(user_id: int, profile: dict, vector_hits: list[dict],
                        "score": round((1 - COLLAB_WEIGHT) * v + COLLAB_WEIGHT * c, 3)})
     scored.sort(key=lambda x: x["score"], reverse=True)
 
+    # "Fans von ..." nennt Titel aus der eigenen Historie. Ist einer davon fuer
+    # das Konto inzwischen verborgen, faellt sein Name hier weg: er stuende
+    # sonst in der Begruendung und im Kurator-Prompt. Sein Beitrag zur
+    # Wertung bleibt - der nennt nichts.
+    verborgen = sichtbarkeit.laden(user_id).verborgen()
+    verborgene_namen: set[str] = set()
+    if verborgen:
+        with get_session() as s:
+            from database import Series
+            verborgene_namen = (
+                {n for i, n in s.exec(select(Movie.id, Movie.name)).all() if i in verborgen}
+                | {n for i, n in s.exec(select(Series.id, Series.name)).all() if i in verborgen})
+
     hydrated = _hydrate(scored)
     for h in hydrated:
         if h["movie_id"] in collab:
-            h["tmdb_because"] = collab[h["movie_id"]]["because"][:3]
+            h["tmdb_because"] = [b for b in collab[h["movie_id"]]["because"]
+                                 if b not in verborgene_namen][:3]
     return hydrated
 
 
+@sichtbarkeit.mit_sicht
 def daily_for(user_id: int, use_cache: bool = True, curate: bool = False,
               sprache: Optional[str] = None) -> dict:
     """Film des Tages + 3 thematische Vorschlaege + Ausreisser.
@@ -1111,9 +1161,12 @@ def daily_for(user_id: int, use_cache: bool = True, curate: bool = False,
     sprache = _sp(sprache)
     today = datetime.utcnow().strftime("%Y-%m-%d")
     key = _daily_key(user_id, today, sprache)
+    sicht = sichtbarkeit.laden(user_id)
     if use_cache:
         cached = _cache_get(key)
-        if cached:
+        # Ist der Film des Tages fuer die Person inzwischen verborgen, gilt
+        # der Zwischenspeicher als leer und es wird neu gerechnet.
+        if cached and _auswahl_sichtbar(cached, sicht):
             _curate_in_background(user_id, cached, sprache)
             return cached
     elif not curate:
@@ -1128,12 +1181,15 @@ def daily_for(user_id: int, use_cache: bool = True, curate: bool = False,
     # nicht; ob es da ist, prueft _curate_in_background bzw. der Kurator.
     if not anbieter.einbettung_verfuegbar():
         stale = _latest_stale_daily(user_id, sprache)
-        if stale:
+        if stale and _auswahl_sichtbar(stale, sicht):
             return stale
 
     profile = build_profile(user_id)
     recent_fod = _recent_film_of_day_ids(user_id, days=3, sprache=sprache)
-    _hidden = dismissed_ids(user_id)
+    # Verborgene Titel zaehlen fuer alles Weitere wie ausgeblendete: so
+    # erreichen sie weder die mechanische Auswahl noch den Kurator
+    # (curator._candidate_pool filtert ebenfalls nach ``hidden``).
+    _hidden = dismissed_ids(user_id) | sicht.verborgen()
     candidates = daily_candidates(user_id, profile, _hidden)
 
     # Wer den Katalog weitgehend durchgeschaut hat, laeuft sonst leer: bei
@@ -1146,6 +1202,8 @@ def daily_for(user_id: int, use_cache: bool = True, curate: bool = False,
             exclude_ids={c["movie_id"] for c in candidates},
             n=MIN_POOL - len(candidates),
         )
+    # Letzte Sicherung vor der Auswahl; beide Quellen filtern schon selbst.
+    candidates = sicht.filtern(candidates)
 
     # Avoid repeating a main pick from the last 3 days for the film-of-day slot
     main_candidates = [c for c in candidates if c["movie_id"] not in recent_fod]
@@ -1178,10 +1236,10 @@ def daily_for(user_id: int, use_cache: bool = True, curate: bool = False,
     thematic = _pick_diverse(remaining, n=3) or remaining[:3]
 
     # Exploration picks — 1-2 films *outside* the user's usual bubble.
-    exploration = _exploration_picks(user_id, profile,
-                                     exclude_ids={film_of_day["movie_id"]}
-                                                 | {t["movie_id"] for t in thematic},
-                                     n=2, sprache=sprache)
+    exploration = sicht.filtern(_exploration_picks(
+        user_id, profile,
+        exclude_ids={film_of_day["movie_id"]} | {t["movie_id"] for t in thematic},
+        n=2, sprache=sprache))
 
     # Build mechanical reason immediately (fast, always present)
     reason = _mechanical_reason(profile, film_of_day, user_id, sprache)
@@ -1273,6 +1331,9 @@ def _rotate_curated(user_id: int, key: str,
     ohne neuen Modelllauf. ``None``, wenn nichts (mehr) da ist."""
     sprache = _sp(sprache)
     cached = _cache_get(key)
+    # Verborgene Titel fallen hier aus Rangliste und Nebenreihen; der Film des
+    # Tages wird ohnehin ersetzt.
+    _auswahl_sichtbar(cached, sichtbarkeit.laden(user_id))
     if not cached or not cached.get("ranking"):
         return None
     shown = set(cached.get("shown_ids") or [])
@@ -1357,7 +1418,8 @@ def _exploration_picks(user_id: int, profile: dict, exclude_ids: set[str],
     anti = [g for g in ALL_GENRES if g.lower() not in {tg.lower() for tg in top_genres}]
     query = "underrated gem " + " ".join(anti[:6])
 
-    raw = search_by_text(query, k=40)
+    raw = search_by_text(query, k=40,
+                         exclude_ids=sichtbarkeit.laden(user_id).verborgen())
     hydrated = _hydrate(raw)
 
     picked: list[dict] = []
@@ -1419,6 +1481,7 @@ def _exploration_reason(profile: dict, film: dict,
     return _t("explore_sonst", sprache)
 
 
+@sichtbarkeit.mit_sicht
 def explain_daily(user_id: int, sprache: Optional[str] = None) -> dict:
     """Enhance today's daily recommendation with an LLM-written justification.
 
@@ -1430,7 +1493,11 @@ def explain_daily(user_id: int, sprache: Optional[str] = None) -> dict:
     today = datetime.utcnow().strftime("%Y-%m-%d")
     key = _daily_key(user_id, today, sprache)
     cached = _cache_get(key)
-    if not cached or not cached.get("film_of_day"):
+    # Die Nebenreihe geht in den Prompt ("Ausserdem im Angebot"): nur, was die
+    # Person sehen darf. Ist der Film des Tages selbst verborgen, gibt es
+    # nichts zu begruenden - daily_for rechnet beim naechsten Laden neu.
+    if (not cached or not cached.get("film_of_day")
+            or not _auswahl_sichtbar(cached, sichtbarkeit.laden(user_id))):
         return {"ok": False, "error": "no_daily_recommendation"}
     if cached.get("llm_reason"):
         return {"ok": True, "llm_reason": cached["llm_reason"], "cached": True}
@@ -2085,21 +2152,25 @@ def _llm_justify(profile: dict, film_of_day: dict, thematic: list[dict],
 # Similar-to (with collection bias)
 # ---------------------------------------------------------------------------
 
+@sichtbarkeit.mit_sicht
 def similar_to(user_id: int, movie_id: str, k: int = 12) -> dict:
     """Vector search with collection boost. Prefers unseen movies."""
     profile = build_profile(user_id)
     seen = profile["seen_ids"]
+    sicht = sichtbarkeit.laden(user_id)
 
     base = _load_movie(movie_id)
-    if not base:
+    # Ein verborgener Ausgangsfilm verhaelt sich wie ein unbekannter: auch
+    # seine Nachbarn verrieten, worum es in ihm geht.
+    if not base or not sicht.film(movie_id):
         return {"movie_id": movie_id, "similar": [], "unseen_only": []}
 
     base_collections = set(
         c for c in (base.collection_ids or "").split(",") if c)
 
     # Pull generous candidate set, then re-rank with collection bonus
-    raw = search_similar(movie_id, k=max(k * 3, 30))
-    hydrated = _hydrate(raw)
+    raw = search_similar(movie_id, k=max(k * 3, 30), exclude_ids=sicht.verborgen())
+    hydrated = sicht.filtern(_hydrate(raw))
 
     # Apply collection boost for unseen movies
     for it in hydrated:
@@ -2169,6 +2240,7 @@ def _mood_reihenfolge(items: list[dict], n: int) -> list[dict]:
     return out
 
 
+@sichtbarkeit.mit_sicht
 def by_mood(user_id: int, mood: str, k: int = 12,
             media_type: str | None = None,
             max_age: Optional[int] = None,
@@ -2198,9 +2270,13 @@ def by_mood(user_id: int, mood: str, k: int = 12,
     # Titel liegen dann oft weiter hinten (Interstellar erst auf Platz 7).
     fenster = (max(k * 3, 30) if max_age is None and not gefragt
                else max(k * 12, 120))
+    # Verborgene Titel (und bei Suchen mit Folgen deren Folgen) schon in der
+    # Suche ueberspringen, damit das Fenster gleich gross bleibt.
+    sicht = sichtbarkeit.laden(user_id)
     raw = search_by_text(normalize_user_query(mood), k=fenster,
-                         media_type=media_type)
-    hydrated = _hydrate(raw)
+                         media_type=media_type,
+                         exclude_ids=sicht.verborgen(folgen=media_type in ("any", "episode")))
+    hydrated = sicht.filtern(_hydrate(raw))
 
     # Altersfilter zuerst, damit auch der Rueckfall auf gesehene Titel weiter
     # unten nichts wieder hereinlaesst, was gerade aussortiert wurde.
@@ -2290,6 +2366,7 @@ _COMPANY_MAP = {
 }
 
 
+@sichtbarkeit.mit_sicht
 def quiz_recommend(user_id: int, answers: dict, n: int = 3,
                    max_age: Optional[int] = None,
                    sprache: Optional[str] = None) -> dict:
@@ -2328,8 +2405,10 @@ def quiz_recommend(user_id: int, answers: dict, n: int = 3,
 
     # Pull a wide candidate pool — chroma-side filter on type
     chroma_filter = media_type if media_type in ("movie", "series") else None
-    raw = search_by_text(query, k=60, media_type=chroma_filter)
-    hydrated = _hydrate(raw)
+    sicht = sichtbarkeit.laden(user_id)
+    raw = search_by_text(query, k=60, media_type=chroma_filter,
+                         exclude_ids=sicht.verborgen())
+    hydrated = sicht.filtern(_hydrate(raw))
 
     # Der Altersfilter greift VOR allen anderen Filtern und wird unten auch
     # nicht gelockert: die Lockerungsstufen arbeiten alle auf `hydrated`, das
@@ -2444,6 +2523,7 @@ def _weekly_in_sprache(user_id: int, cache_key: str, payload: dict,
     return payload
 
 
+@sichtbarkeit.mit_sicht
 def weekly_series_pick(user_id: int, sprache: Optional[str] = None) -> dict:
     """One curated series suggestion for the current ISO calendar week.
 
@@ -2460,6 +2540,7 @@ def weekly_series_pick(user_id: int, sprache: Optional[str] = None) -> dict:
     iso_year, iso_week, _ = datetime.utcnow().isocalendar()
     cache_key = f"u:{user_id}:weekly:{iso_year}-{iso_week:02d}"
 
+    sicht = sichtbarkeit.laden(user_id)
     with get_session() as s:
         cached = s.get(RecommendationCache, cache_key)
     if cached:
@@ -2468,14 +2549,20 @@ def weekly_series_pick(user_id: int, sprache: Optional[str] = None) -> dict:
         except Exception:
             fertig = None
         if fertig is not None:
-            return _weekly_in_sprache(user_id, cache_key, fertig, sprache)
+            serie = fertig.get("series") or {}
+            # Eine inzwischen verborgene Serie der Woche wird nicht
+            # ausgeliefert, sondern ersetzt (der Eintrag unten ueberschreibt
+            # den alten).
+            if not serie or sicht.serie(serie.get("movie_id")):
+                return _weekly_in_sprache(user_id, cache_key, fertig, sprache)
 
     profile = build_profile(user_id)
     seen = profile["seen_ids"]
     query = profile_to_query_text(profile) or "great acclaimed tv series"
 
-    raw = search_by_text(query, k=40, media_type="series")
-    hydrated = _hydrate(raw)
+    raw = search_by_text(query, k=40, media_type="series",
+                         exclude_ids=sicht.verborgen())
+    hydrated = sicht.filtern(_hydrate(raw))
     candidates = [it for it in hydrated
                   if it["movie_id"] not in seen
                   and it["movie_id"] not in dismissed_ids(user_id)]

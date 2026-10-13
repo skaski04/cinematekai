@@ -115,6 +115,36 @@ def _m005_sprache_je_nutzer(conn) -> str:
     return "ergaenzt"
 
 
+def _table_exists(conn, table: str) -> bool:
+    return conn.execute(text(
+        "select 1 from sqlite_master where type = 'table' and name = :n"
+    ), {"n": table}).first() is not None
+
+
+def _m006_sichtbarkeit(conn) -> str:
+    """Tabellen fuer die sichtbaren Titel je Konto (siehe sichtbarkeit.py).
+
+    Bisher bekam jede Person den ganzen Katalog des Bibliothekskontos zu sehen,
+    auch Titel, die Jellyfin ihrem eigenen Konto sperrt. Die Tabellen starten
+    leer; leer heisst "kein Filter" (Verhalten wie bisher), bis der naechste
+    Sync die Mengen fuellt.
+
+    ``create_all`` beim Start legt die Tabellen in der Regel schon vorher an.
+    Die Migration sorgt trotzdem selbst dafuer, damit das Schema nicht davon
+    abhaengt, in welcher Reihenfolge jemand init_db und die Migrationen
+    aufruft. Angelegt wird aus der Modellbeschreibung (SQLAlchemy-Core), damit
+    Spalten und Schluessel exakt zu database.py passen.
+    """
+    from database import SichtbarerTitel, SichtbarkeitStand
+    angelegt = []
+    for modell in (SichtbarkeitStand, SichtbarerTitel):
+        tabelle = modell.__table__
+        if not _table_exists(conn, tabelle.name):
+            tabelle.create(conn)
+            angelegt.append(tabelle.name)
+    return ("angelegt: " + ", ".join(angelegt)) if angelegt else "bereits vorhanden"
+
+
 MIGRATIONS: list[tuple[int, str, callable]] = [
     (1, "Ungenutzte Jellyfin-Token aus usersession entfernen",
      _m001_blank_jf_access_tokens),
@@ -122,6 +152,7 @@ MIGRATIONS: list[tuple[int, str, callable]] = [
     (3, "Specials-Zaehler fuer Serien", _m003_special_count),
     (4, "Ton- und Untertitelsprachen fuer Filme und Serien", _m004_sprachspalten),
     (5, "Sprache der Oberflaeche je Nutzer", _m005_sprache_je_nutzer),
+    (6, "Sichtbare Titel je Jellyfin-Konto", _m006_sichtbarkeit),
 ]
 
 

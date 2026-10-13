@@ -33,6 +33,7 @@ import httpx
 from sqlmodel import select
 
 import llm_client
+import sichtbarkeit
 import texte
 from database import (get_session, Movie, Series, WatchState, SeriesProgress,
                       NotInterested)
@@ -140,6 +141,13 @@ def _user_taste(user_id: int) -> dict:
         movies = {m.id: m for m in s.exec(select(Movie)).all()}
         series = {x.id: x for x in s.exec(select(Series)).all()}
         ni_rows = s.exec(select(NotInterested).where(NotInterested.user_id == user_id)).all()
+    # Der Geschmacksblock geht woertlich an das Sprachmodell, und dessen
+    # Begruendungen nennen gern einen Lieblingsfilm. Titel, die das Konto
+    # nicht (mehr) sehen darf, gehoeren deshalb nicht hinein - auch nicht als
+    # eigene Historie aus der Zeit, als die Freigabe noch galt.
+    sicht = sichtbarkeit.laden(user_id)
+    movies = {k: m for k, m in movies.items() if sicht.film(k)}
+    series = {k: x for k, x in series.items() if sicht.serie(k)}
 
     fav, played, abandoned, low, recent = [], [], [], [], []
     for ws in ws_rows:
@@ -229,13 +237,18 @@ def _candidate_pool(user_id: int, profile: dict, hidden: set[str]) -> list[dict]
     """Alle ungesehenen Filme: zuerst in der Reihenfolge der mechanischen
     Auswahl (Profil + TMDB), danach der Rest nach Community-Wertung."""
     import recommendations as R
+    # Die Liste geht vollstaendig in den Prompt: nur Filme, die das Konto
+    # sehen darf. daily_candidates filtert selbst; der Rest kommt direkt aus
+    # der Tabelle und braucht die Pruefung hier.
+    sicht = sichtbarkeit.laden(user_id)
     ranked = [c for c in R.daily_candidates(user_id, profile, hidden)
-              if c.get("media_type") == "movie"]
+              if c.get("media_type") == "movie" and sicht.film(c["movie_id"])]
     have = {c["movie_id"] for c in ranked}
     seen = profile["seen_ids"]
     with get_session() as s:
         rest = [m for m in s.exec(select(Movie)).all()
-                if m.id not in seen and m.id not in hidden and m.id not in have]
+                if m.id not in seen and m.id not in hidden and m.id not in have
+                and sicht.film(m.id)]
     rest.sort(key=lambda m: -(m.community_rating or 0))
     return ranked + R._hydrate([{"movie_id": m.id, "score": 0.0} for m in rest])
 
@@ -384,9 +397,13 @@ def curate(user_id: int, profile: dict, hidden: set[str],
     # selben Fenster passen, auch wenn jemand waehrenddessen umstellt.
     kontext = llm_client.kontext_tokens()
     from database import User
+    sicht = sichtbarkeit.laden(user_id)
     with get_session() as s:
         user = s.get(User, user_id)
-        recent_fod = [_label(m) for mid in recent_fod_ids if (m := s.get(Movie, mid))]
+        # Auch fruehere Filme des Tages stehen im Prompt; ein inzwischen
+        # verborgener gehoert nicht dazu.
+        recent_fod = [_label(m) for mid in recent_fod_ids
+                      if sicht.film(mid) and (m := s.get(Movie, mid))]
     # Neutral statt des Anzeigenamens: der Prompt geht an einen externen
     # Anbieter, und manche Anbieter verbieten personenbezogene Daten oder
     # verwenden Ein-/Ausgaben zum Training. Fuer die Auswahl spielt der Name

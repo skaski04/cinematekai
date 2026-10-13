@@ -2,10 +2,9 @@
 
 **English** | [Deutsch](README.de.md)
 
-Self-hosted recommendations for your own Jellyfin library. CinematekAI picks a movie of the day, finds films
-by mood, tells you how well a title fits you and chats about your collection.
-
-Everything runs in **one container**. You configure it in the browser; there is no configuration file.
+**What should we watch tonight?** CinematekAI answers that from the films and series already in your Jellyfin
+library. It is a self-hosted web app for you or your whole household: an AI curator picks a movie of the day, you
+can search by mood, every film shows how well it fits you, and you can chat about your collection.
 
 > [!WARNING]
 > **Vibe-coded, not reviewed.** CinematekAI was written almost entirely with an AI coding assistant ("vibe
@@ -16,24 +15,51 @@ Everything runs in **one container**. You configure it in the browser; there is 
 *CinematekAI is an independent hobby project and is not affiliated with CINEMATEK, the Royal Film Archive of
 Belgium.*
 
+## Why CinematekAI?
+
+Many recommendation tools for Jellyfin look for new titles to request or download. CinematekAI starts from the
+other end: what is already on your server.
+
+- **Four ways to pick, all from your own library.** Movie of the day, mood search, match in percent and chat work
+  with the titles already in your Jellyfin library. Nothing is requested or downloaded automatically, so no film
+  lands on your disk uninvited.
+- **Set up in the browser.** One container with the database and vector index built in: no separate database
+  server, no configuration file, no `.env`. A five-step wizard does the rest, and later changes apply without a
+  restart.
+- **Made for the whole household.** Each person signs in with their own Jellyfin account and picks German or
+  English. Everyone only sees what their account may see: library access, parental rating limit and blocked tags
+  apply to lists, search, recommendations, chat, posters and trailers.
+- **A fallback model and an AI log.** If the main model fails or stalls, an optional fallback model can take over.
+  The AI log keeps every language model call for 180 days and shows admins, per task and model, the success rate,
+  response times and how often the fallback was needed.
+- **Privacy built in.** Chat and embeddings are set up separately and can run locally, in the cloud or mixed; with
+  local models, none of your library data goes to a cloud AI service. No telemetry, the fonts ship with the app,
+  and API keys never reach the browser.
+- **Runs beside Jellyfin, not inside it.** CinematekAI is its own app, not a plugin, and talks to Jellyfin over its
+  API. It works with Jellyfin 12, which accepts API keys only in the `Authorization` header.
+
 ## Features
 
-- **Movie of the day** - an AI curator picks one film per user from your library and explains the choice.
+- **Movie of the day** - for each person, an AI curator picks one film from your library and explains the choice.
+  Without a suitable language model the pick is made mechanically.
 - **Search by mood** - describe what you feel like ("a funny animal film for kids") and get matching titles.
-  Genres are recognised from the request and narrow the search.
+  Genres and requests for children are recognised from the text; for children, titles with too high an age rating
+  are left out. This needs only the embedding model, no language model.
 - **Match in percent** - every film shows how well it fits you, based on what you have watched and rated.
-- **Chat about your collection** - ask for suggestions and the answer comes from the films you actually own.
-- **Movies and series**, favourites, and sign-in with the Jellyfin accounts you already have.
-- **German and English** interface, switchable per user.
-- **AI log** - every call to a language model is recorded for 180 days (success rate, response times, how often
-  the fallback model had to step in, unusable answers), so you can see whether a model holds up.
+- **Chat about your collection** - ask for suggestions and the answer comes from the films and series you actually
+  own. The chat knows runtimes and audio languages ("under 90 minutes, with German audio") and gives a clear yes,
+  rather not or no when you ask whether it would recommend a title.
+- **More on the start page** - continue watching, a series of the week, "How much time do you have?" (unwatched
+  films that fit your evening), "Out of your bubble" (genres you don't usually watch), "Keep going or drop it?" for
+  series you got stuck in, and a watchlist.
+- **Movies and series** with favourites and ratings that are written back to Jellyfin.
 
 ### Optional: TMDB
 
 With a free [TMDB](https://www.themoviedb.org) token, the start page also shows **Missing from your collection**: good
 films you do not have yet, taken from TMDB's "people who liked this also liked" lists for the titles you have
 watched. With a [Seerr](https://github.com/seerr-team/seerr) address (formerly Jellyseerr) set, each title links
-straight to its page in Seerr, where you can request it.
+straight to its page in Seerr, where you can request it yourself - nothing is requested automatically.
 
 ## Requirements
 
@@ -81,10 +107,12 @@ The wizard has five steps. Everything can be changed later under **Admin -> Sett
    sets it up becomes the first admin of CinematekAI; further Jellyfin users are added to an allowlist by an admin.
 2. **Language model** - for chat, the curator and explanations. Optional.
 3. **Embeddings** - for search and match values. Without them there is no search by mood.
-4. **Extras** - TMDB token, Seerr address, the time of the nightly run and its time zone, and an optional
-   fallback model that takes over when the main model fails.
+4. **Extras** - all optional: the time of the nightly run and its time zone, and a fallback model that takes over
+   when the main model fails.
 5. **Read the library** - runs the whole chain once (sync, embed, daily picks). With a local embedding model on a
    CPU this can take hours for a large library; progress is shown.
+
+Step 4 is also where the TMDB token and the Seerr address go (see [Optional: TMDB](#optional-tmdb)).
 
 ## Supported providers
 
@@ -106,6 +134,7 @@ embeddings).
 | Cerebras | yes | - | |
 | Cohere | yes | yes | e.g. `embed-multilingual-v3.0` |
 | ArliAI | yes | - | the Core plan allows only one request at a time |
+| NVIDIA | yes | - | |
 | Voyage AI | - | yes | e.g. `voyage-3.5` |
 | Jina AI | - | yes | e.g. `jina-embeddings-v3` |
 | Azure OpenAI | yes | yes | address `https://<resource>.openai.azure.com/openai/v1`, model = name of the deployment |
@@ -132,6 +161,15 @@ catalogue.
 - **Keys never leave the backend.** The interface only shows whether a key is set and its last four characters. If you
   change the provider or address without entering a new key, the old key is discarded so that it cannot reach
   the wrong provider.
+- **Everyone only sees what their Jellyfin account may see.** Lists, search, recommendations, chat, posters and
+  trailers follow the account's library access, parental rating limit and blocked tags in Jellyfin. CinematekAI
+  reads these rights at every sync (sign-in, the daily run, "Sync"); right after updating from 1.0.0 nothing is
+  filtered until that person's first sync.
+- **Jellyfin is read in bulk, not polled.** The library and everyone's watch state are read in the daily run; an
+  admin can start a library sync with "Sync", and each person's watch state is also read when they sign in. In
+  between, lists, search, recommendations and chat work from CinematekAI's own copy, so something you just watched
+  in Jellyfin shows up after the next sync. Posters, episode lists and trailers are fetched from Jellyfin when you
+  open them, and favourites and ratings you set are written back to it.
 
 ## Data and backup
 
@@ -186,7 +224,7 @@ pip install -r backend/requirements.txt
 cd backend && CINEMATEKAI_DATA=../data CINEMATEKAI_STATIC=../frontend/build uvicorn server:app --port 8095
 ```
 
-Frontend (Node 20 or newer, SvelteKit):
+Frontend (Node 22 or newer, SvelteKit):
 
 ```bash
 cd frontend && npm install && npm run dev
@@ -200,7 +238,8 @@ target. `npm run build` creates the static interface in `frontend/build`, which 
 |---|---|---|
 | `CINEMATEKAI_DATA` | folder for database, vectors and settings | `/app/data` |
 | `CINEMATEKAI_STATIC` | built web interface that the backend serves | `/app/static` |
-| `CINEMATEKAI_CORS_REGEX` | pattern for allowed cross-origin sites; only needed if the interface is served from a different address than the API | localhost, private IP ranges and common local host-name suffixes |
+| `CINEMATEKAI_CORS_REGEX` | pattern for allowed cross-origin sites; only needed if the interface is served from a different address than the API | off (not needed: interface and API share one address) |
+| `CINEMATEKAI_API_DOCS` | `1` turns on the automatic API documentation under `/api/docs`, `/api/redoc` and `/api/openapi.json` | off |
 | `TZ` | default time zone of the daily jobs | `Europe/Berlin` |
 
 ## Ports and endpoints
@@ -208,7 +247,7 @@ target. `npm run build` creates the static interface in `frontend/build`, which 
 | What | Where |
 |---|---|
 | Web interface and API | port `8095` (the API under `/api/...`) |
-| Health check | `/health` returns `{"ok": true}` (the container's own check uses `/api/health`) |
+| Health check | `/health` returns `{"ok": true}` plus the running `version` (the container's own check uses `/api/health`) |
 | Metrics | `/metrics` in Prometheus text format: counters and states only, no titles or names |
 
 `/health` and `/metrics` need no sign-in so that monitoring tools can reach them. Do not publish the port to the

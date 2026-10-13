@@ -2,10 +2,10 @@
 
 [English](README.md) | **Deutsch**
 
-Selbst gehostete Empfehlungen für die eigene Jellyfin-Bibliothek. CinematekAI wählt einen Film des Tages, findet
-Filme nach Stimmung, zeigt dir, wie gut ein Titel zu dir passt, und unterhält sich mit dir über deine Sammlung.
-
-Alles läuft in **einem Container**. Eingestellt wird im Browser, eine Konfigurationsdatei gibt es nicht.
+**Was schauen wir heute?** CinematekAI beantwortet die Frage mit den Filmen und Serien, die schon in deiner
+Jellyfin-Bibliothek liegen. Es ist eine selbst gehostete App für dich oder deinen ganzen Haushalt: Ein KI-Kurator
+wählt einen Film des Tages, du suchst nach Stimmung, zu jedem Film steht, wie gut er zu dir passt, und über deine
+Sammlung kannst du dich im Chat unterhalten.
 
 > [!WARNING]
 > **Vibe-coded, nicht geprüft.** CinematekAI ist praktisch vollständig mit einem KI-Programmierassistenten
@@ -16,25 +16,53 @@ Alles läuft in **einem Container**. Eingestellt wird im Browser, eine Konfigura
 *CinematekAI ist ein unabhängiges Hobbyprojekt und steht in keiner Verbindung zu CINEMATEK, dem Königlichen
 Filmarchiv Belgiens.*
 
+## Was CinematekAI anders macht
+
+Viele Empfehlungswerkzeuge für Jellyfin suchen neue Titel, die sich anfragen oder herunterladen lassen. CinematekAI
+geht vom anderen Ende aus: von dem, was schon auf deinem Server liegt.
+
+- **Vier Wege zum passenden Film, alle aus deiner eigenen Bibliothek.** Film des Tages, Stimmungssuche, Passung in
+  Prozent und Chat arbeiten mit den Titeln, die schon in deiner Jellyfin-Bibliothek liegen. Nichts wird
+  automatisch angefragt oder heruntergeladen, kein Film landet ungefragt auf deiner Platte.
+- **Eingerichtet im Browser.** Ein Container, Datenbank und Vektorindex sind eingebaut: kein eigener
+  Datenbankserver, keine Konfigurationsdatei, keine `.env`. Den Rest erledigt ein Assistent in fünf Schritten, und
+  spätere Änderungen gelten ohne Neustart.
+- **Für den ganzen Haushalt.** Jede Person meldet sich mit ihrem eigenen Jellyfin-Konto an und wählt Deutsch oder
+  Englisch. Alle sehen nur, was ihr Konto sehen darf: Bibliotheksfreigaben, Altersgrenze und gesperrte Tags gelten
+  für Listen, Suche, Empfehlungen, Chat, Poster und Trailer.
+- **Rückfallmodell und KI-Protokoll.** Fällt das Hauptmodell aus oder hängt es, kann ein optionales Rückfallmodell
+  einspringen. Das KI-Protokoll hält jeden Aufruf eines Sprachmodells 180 Tage lang fest und zeigt Admins je
+  Aufgabe und Modell die Erfolgsquote, die Antwortzeiten und wie oft der Rückfall nötig war.
+- **Datenschutz eingebaut.** Chat und Embeddings werden getrennt eingestellt und können lokal, in der Cloud oder
+  gemischt laufen; mit lokalen Modellen geht nichts aus deiner Bibliothek an einen KI-Dienst in der Cloud. Keine
+  Telemetrie, die Schriften werden mitgeliefert, und API-Schlüssel landen nie im Browser.
+- **Läuft neben Jellyfin, nicht darin.** CinematekAI ist eine eigene App, kein Plugin, und spricht über die API mit
+  Jellyfin. Es läuft mit Jellyfin 12, das API-Schlüssel nur noch in der Kopfzeile `Authorization` annimmt.
+
 ## Funktionen
 
-- **Film des Tages** - ein KI-Kurator wählt für jeden Nutzer einen Film aus deiner Bibliothek und begründet die Wahl.
+- **Film des Tages** - für jede Person wählt ein KI-Kurator einen Film aus deiner Bibliothek und begründet die
+  Wahl. Ohne passendes Sprachmodell wird mechanisch ausgewählt.
 - **Suche nach Stimmung** - beschreibe, worauf du Lust hast („ein lustiger Tierfilm für Kinder“), und bekomme
-  passende Titel. Genres werden in der Anfrage erkannt und grenzen die Suche ein.
+  passende Titel. Genres und Anfragen für Kinder werden im Text erkannt; für Kinder fallen Titel mit zu hoher
+  Altersfreigabe weg. Dafür reicht das Einbettungsmodell, ein Sprachmodell braucht es nicht.
 - **Passung in Prozent** - zu jedem Film steht, wie gut er zu dir passt, abgeleitet aus dem, was du gesehen und
   bewertet hast.
-- **Chat über deine Sammlung** - bitte um Vorschläge; die Antwort kommt aus den Filmen, die du wirklich hast.
-- **Filme und Serien**, Favoriten und Anmeldung mit den Jellyfin-Konten, die es schon gibt.
-- **Oberfläche auf Deutsch und Englisch**, pro Nutzer umschaltbar.
-- **KI-Protokoll** - jeder Aufruf eines Sprachmodells wird 180 Tage aufbewahrt (Erfolgsquote, Antwortzeiten, wie
-  oft das Rückfallmodell einspringen musste, unbrauchbare Antworten). So siehst du, ob ein Modell trägt.
+- **Chat über deine Sammlung** - bitte um Vorschläge; die Antwort kommt aus den Filmen und Serien, die du wirklich
+  hast. Der Chat kennt Laufzeiten und Tonspuren („unter 90 Minuten, auf Deutsch“) und antwortet auf „Würdest du mir
+  … empfehlen?“ mit einem klaren Ja, Eher nicht oder Nein.
+- **Mehr auf der Startseite** - Weiterschauen, Serie der Woche, „Wie viel Zeit hast du?“ (ungesehene Filme, die in
+  deinen Abend passen), „Raus aus der Blase“ (Genres, die sonst selten bei dir vorkommen), „Weiter oder weg?“ für
+  Serien, bei denen du hängen geblieben bist, und eine Merkliste.
+- **Filme und Serien** mit Favoriten und Bewertungen, die auch in Jellyfin landen.
 
 ### Optional: TMDB
 
 Mit einem kostenlosen [TMDB](https://www.themoviedb.org)-Token zeigt die Startseite außerdem **Fehlt in deiner
 Sammlung**: gute Filme, die du noch nicht hast, aus den TMDB-Listen „Wer das mochte, mochte auch“ zu den Titeln, die
 du gesehen hast. Ist eine Adresse von [Seerr](https://github.com/seerr-team/seerr) (früher Jellyseerr) eingetragen,
-führt jeder Titel direkt zu seiner Seite in Seerr, wo du ihn anfragen kannst.
+führt jeder Titel direkt zu seiner Seite in Seerr, wo du ihn selbst anfragen kannst - automatisch angefragt wird
+nichts.
 
 ## Voraussetzungen
 
@@ -83,11 +111,13 @@ Der Assistent hat fünf Schritte. Alles lässt sich später unter **Admin -> Ein
    auf eine Zulassungsliste.
 2. **Sprachmodell** - für Chat, Kurator und Begründungen. Optional.
 3. **Embeddings** - für Suche und Passung. Ohne sie gibt es keine Suche nach Stimmung.
-4. **Extras** - TMDB-Token, Seerr-Adresse, Uhrzeit und Zeitzone des nächtlichen Laufs und ein optionales
-   Rückfallmodell, das einspringt, wenn das Hauptmodell ausfällt.
+4. **Extras** - alles freiwillig: Uhrzeit und Zeitzone des nächtlichen Laufs und ein Rückfallmodell, das
+   einspringt, wenn das Hauptmodell ausfällt.
 5. **Bibliothek einlesen** - lässt die ganze Kette einmal laufen (abgleichen, einbetten, Tagesauswahl). Mit einem
    lokalen Einbettungsmodell auf der CPU kann das bei einer großen Bibliothek Stunden dauern; der Fortschritt
    wird angezeigt.
+
+Ebenfalls in Schritt 4 trägst du den TMDB-Token und die Seerr-Adresse ein (siehe [Optional: TMDB](#optional-tmdb)).
 
 ## Unterstützte Anbieter
 
@@ -109,6 +139,7 @@ Cloud mit lokalen Embeddings).
 | Cerebras | ja | - | |
 | Cohere | ja | ja | z. B. `embed-multilingual-v3.0` |
 | ArliAI | ja | - | der Core-Tarif erlaubt nur eine Anfrage gleichzeitig |
+| NVIDIA | ja | - | |
 | Voyage AI | - | ja | z. B. `voyage-3.5` |
 | Jina AI | - | ja | z. B. `jina-embeddings-v3` |
 | Azure OpenAI | ja | ja | Adresse `https://<ressource>.openai.azure.com/openai/v1`, Modell = Name der Bereitstellung |
@@ -135,6 +166,16 @@ Katalog.
 - **Schlüssel verlassen das Backend nie.** Die Oberfläche zeigt nur, ob ein Schlüssel gesetzt ist, und seine letzten vier
   Zeichen. Wird Anbieter oder Adresse geändert, ohne einen neuen Schlüssel einzutragen, verwirft CinematekAI den
   alten, damit er nicht beim falschen Anbieter landet.
+- **Jede Person sieht nur, was ihr Jellyfin-Konto sehen darf.** Listen, Suche, Empfehlungen, Chat, Poster und
+  Trailer richten sich nach den Bibliotheksfreigaben, der Altersgrenze (Jugendschutz) und den gesperrten Tags des
+  Kontos in Jellyfin. Diese Rechte liest CinematekAI bei jedem Abgleich (Anmeldung, täglicher Lauf, „Sync“);
+  direkt nach dem Update von 1.0.0 gilt bis zum ersten Abgleich dieser Person noch kein Filter.
+- **Jellyfin wird gesammelt gelesen, nicht ständig abgefragt.** Bibliothek und Sehstand aller Personen liest
+  CinematekAI im täglichen Lauf; ein Admin kann mit „Sync“ einen Abgleich der Bibliothek starten, und den Sehstand
+  einer Person liest es zusätzlich bei ihrer Anmeldung. Dazwischen arbeiten Listen, Suche, Empfehlungen und Chat mit
+  der eigenen Kopie - was du gerade in Jellyfin geschaut hast, erscheint also nach dem nächsten Abgleich. Poster,
+  Folgenlisten und Trailer holt CinematekAI beim Öffnen aus Jellyfin, und Favoriten und Bewertungen, die du setzt,
+  schreibt es dorthin zurück.
 
 ## Daten und Sicherung
 
@@ -190,7 +231,7 @@ pip install -r backend/requirements.txt
 cd backend && CINEMATEKAI_DATA=../data CINEMATEKAI_STATIC=../frontend/build uvicorn server:app --port 8095
 ```
 
-Frontend (Node 20 oder neuer, SvelteKit):
+Frontend (Node 22 oder neuer, SvelteKit):
 
 ```bash
 cd frontend && npm install && npm run dev
@@ -204,7 +245,8 @@ ausliefert, wenn `CINEMATEKAI_STATIC` darauf zeigt.
 |---|---|---|
 | `CINEMATEKAI_DATA` | Ordner für Datenbank, Vektoren und Einstellungen | `/app/data` |
 | `CINEMATEKAI_STATIC` | gebaute Oberfläche, die das Backend ausliefert | `/app/static` |
-| `CINEMATEKAI_CORS_REGEX` | Muster für erlaubte fremde Ursprünge; nur nötig, wenn die Oberfläche unter einer anderen Adresse läuft als die API | localhost, private IP-Bereiche und übliche lokale Rechnernamen-Endungen |
+| `CINEMATEKAI_CORS_REGEX` | Muster für erlaubte fremde Ursprünge; nur nötig, wenn die Oberfläche unter einer anderen Adresse läuft als die API | aus (nicht nötig: Oberfläche und API haben dieselbe Adresse) |
+| `CINEMATEKAI_API_DOCS` | `1` schaltet die automatische API-Dokumentation unter `/api/docs`, `/api/redoc` und `/api/openapi.json` ein | aus |
 | `TZ` | Standard-Zeitzone der täglichen Läufe | `Europe/Berlin` |
 
 ## Ports und Endpunkte
@@ -212,7 +254,7 @@ ausliefert, wenn `CINEMATEKAI_STATIC` darauf zeigt.
 | Was | Wo |
 |---|---|
 | Oberfläche und API | Port `8095` (die API unter `/api/...`) |
-| Gesundheitsprüfung | `/health` liefert `{"ok": true}` (die Prüfung des Containers selbst nutzt `/api/health`) |
+| Gesundheitsprüfung | `/health` liefert `{"ok": true}` und die laufende `version` (die Prüfung des Containers selbst nutzt `/api/health`) |
 | Metriken | `/metrics` im Prometheus-Textformat: nur Zähler und Zustände, keine Titel oder Namen |
 
 `/health` und `/metrics` brauchen keine Anmeldung, damit Überwachungswerkzeuge sie erreichen. Den Port nicht ohne
@@ -239,7 +281,8 @@ einen Reverse-Proxy, der den Zugriff beschränkt, ins Internet stellen.
 
 ## Lizenz
 
-CinematekAI steht unter der [PolyForm Noncommercial License 1.0.0](LICENSE) (der verbindliche Text ist englisch).
+CinematekAI steht unter der [PolyForm Noncommercial License 1.0.0](LICENSE). Rechtlich gilt der englische
+Lizenztext in der Datei `LICENSE`; die folgenden Sätze fassen ihn nur zusammen.
 
 Frei nutzbar für den privaten Gebrauch, für Bildung, Forschung und gemeinnützige oder andere nichtkommerzielle
 Organisationen. **Kommerzielle Nutzung ist nicht erlaubt.** Wer CinematekAI kommerziell einsetzen möchte, meldet

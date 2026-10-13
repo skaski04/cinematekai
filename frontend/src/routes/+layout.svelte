@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { user, fetchMe, doLogout } from '$lib/auth.svelte.js';
+  import { user, backend, fetchMe, doLogout } from '$lib/auth.svelte.js';
   import { api } from '$lib/api.js';
   import SearchBar from '$lib/components/SearchBar.svelte';
   import SprachWahl from '$lib/components/SprachWahl.svelte';
@@ -131,6 +131,12 @@
           {/if}
         </p>
       </div>
+      {#if backend.version}
+        <!-- Version des laufenden Backends (aus /api/auth/me), nicht die beim
+             Bauen: nach einem Update steht hier, was wirklich läuft. In beiden
+             Sprachen gleich, nur Name und Nummer. -->
+        <p class="abspann-version">CinematekAI {backend.version}</p>
+      {/if}
     </footer>
   {/if}
 {:else}
@@ -294,6 +300,12 @@
     margin: 0; font-size: 12px; line-height: 1.5;
   }
   .abspann-original { display: block; margin-top: 2px; font-size: 11px; font-style: italic; }
+  /* Noch leiser als der Hinweis darüber: eine Zeile für Fehlerberichte, kein
+     Inhalt. Dieselbe Farbe, damit der Kontrast (AA) erhalten bleibt. */
+  .abspann-version {
+    margin: var(--s-3) 0 0;
+    font-size: 11px; letter-spacing: 0.04em;
+  }
 
   /* viewport-fit=cover (app.html): ohne den sicheren Bereich laege die
      letzte Zeile auf dem iPhone unter dem Home-Balken. */

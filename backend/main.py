@@ -1,5 +1,5 @@
 """CinematekAI Backend — Phase 2 with multi-user, characters, collections."""
-import json, logging, os, threading
+import functools, json, logging, os, threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Query, Depends, Response, Request
@@ -18,16 +18,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger("cinematekai")
 
 import anbieter
+import config
 import einstellungen_api
 import texte
 import jellyfin
 import llm_client
 import settings
+import sichtbarkeit
 from database import (init_db, get_session, Movie, Series, SeriesProgress, Episode,
                       Collection, WatchState, SyncState, User, UserSession,
                       Watchlist, NotInterested)
 from embeddings import normalize_user_query, passung_prozent
-from jellyfin import (stream_image, open_image, ImageNotFound, trailer_pfad, lookup_jellyfin_user,
+from jellyfin import (stream_image, open_image, ImageNotFound, KeinBild, ist_item_id,
+                      trailer_pfad, lookup_jellyfin_user,
                       set_favorite as jf_set_favorite, set_rating as jf_set_rating,
                       fetch_series_episodes)
 from sync import sync_library, sync_series_library, sync_watch_state, sync_series_progress
@@ -100,6 +103,20 @@ def _text(schluessel: str, **werte) -> str:
     return texte.waehle(_T, schluessel, **werte)
 
 
+def _mit_sicht(endpunkt):
+    """Fuer Endpunkte, die neben dem eigenen Filter noch Module aufrufen, die
+    die Sichtbarkeit selbst laden (Profil, Empfehlungen): die Menge des
+    angemeldeten Nutzers wird so fuer die ganze Anfrage einmal geholt (siehe
+    sichtbarkeit.fuer_aufruf). Steht unter ``@app.get``; FastAPI liest die
+    Parameter ueber functools.wraps vom eigentlichen Endpunkt."""
+    @functools.wraps(endpunkt)
+    def huelle(*args, **kwargs):
+        user = kwargs.get("user")
+        with sichtbarkeit.fuer_aufruf(getattr(user, "id", None)):
+            return endpunkt(*args, **kwargs)
+    return huelle
+
+
 def _jellyfin_browser_url() -> str:
     """Adresse, unter der der BROWSER Jellyfin erreicht (leer = wie die
     Backend-Adresse). Bei jedem Aufruf gelesen, damit eine Aenderung im
@@ -123,34 +140,42 @@ def oeffentlicher_link(item_id: str) -> str:
     """
     return f"{_jellyfin_browser_url()}/web/#/details?id={item_id}"
 
-app = FastAPI(title="CinematekAI Backend", version="0.2.0")
-# Oberflaeche und API kommen seit Oktober 2026 aus demselben Prozess und von
-# derselben Adresse (server.py) — der Browser stellt also nur Anfragen an den
-# eigenen Ursprung, fuer die CORS gar nicht greift. Die Regel ist damit nur ein
-# Sicherheitsnetz und darf eng sein. Vorher stand "*" zusammen mit
-# allow_credentials, was jede beliebige Seite im Netz Anfragen mit dem
-# Session-Cookie haette stellen lassen.
-# Das Muster deckt localhost, die privaten Netze (10.x, 172.16-31.x, 192.168.x)
-# und Namen auf .local/.lan/.home/.internal ab - also die ueblichen Wege, eine
-# selbst gehostete App im Heimnetz aufzurufen. Wer die App unter einer
-# oeffentlichen Domain betreibt, setzt CINEMATEKAI_CORS_REGEX passend.
-_ALLOWED_ORIGIN_RE = os.environ.get(
-    "CINEMATEKAI_CORS_REGEX",
-    r"^https?://("
-    r"localhost|127\.0\.0\.1"
-    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
-    r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
-    r"|192\.168\.\d{1,3}\.\d{1,3}"
-    r"|([a-z0-9-]+\.)+(local|lan|home|internal)"
-    r")(:\d+)?$",
+# Die automatische API-Doku (/api/docs, /api/redoc, /api/openapi.json) ist
+# standardmaessig aus. Sie listet jede Route samt Parametern fuer jeden, der
+# die Seite erreicht - ohne Anmeldung. Fuer die Oberflaeche wird sie nicht
+# gebraucht; wer an der API arbeitet, schaltet sie mit CINEMATEKAI_API_DOCS=1
+# ein. Gelesen beim Start, weil FastAPI die Routen dafuer beim Anlegen der
+# App einrichtet.
+_API_DOKU = (os.environ.get("CINEMATEKAI_API_DOCS") or "").strip().lower() in (
+    "1", "true", "yes", "on", "ja")
+
+app = FastAPI(
+    title="CinematekAI Backend",
+    version=config.VERSION,
+    docs_url="/docs" if _API_DOKU else None,
+    redoc_url="/redoc" if _API_DOKU else None,
+    openapi_url="/openapi.json" if _API_DOKU else None,
 )
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=_ALLOWED_ORIGIN_RE,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# CORS nur, wenn ausdruecklich verlangt. Oberflaeche und API kommen seit
+# Oktober 2026 aus demselben Prozess und von derselben Adresse (server.py),
+# und beim Entwickeln reicht der Vite-Server /api per Proxy weiter - der
+# Browser fragt also immer nur den eigenen Ursprung, fuer den CORS gar nicht
+# greift. Bis 1.0.0 war trotzdem ein Muster fuer alle privaten Netze und
+# lokalen Namen voreingestellt: damit durfte jede Seite aus dem Heimnetz
+# (etwa ein anderer selbst gehosteter Dienst mit einer Luecke) Anfragen mit
+# dem Sitzungs-Cookie stellen und die Antworten lesen. Wer die Oberflaeche
+# wirklich unter einer anderen Adresse betreibt als die API, setzt
+# CINEMATEKAI_CORS_REGEX auf genau diese Adresse.
+_CORS_REGEX = (os.environ.get("CINEMATEKAI_CORS_REGEX") or "").strip()
+if _CORS_REGEX:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=_CORS_REGEX,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 class _SpracheJeAnfrage:
@@ -291,11 +316,17 @@ def _shutdown():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    # Bewusst ohne Anmeldung (Monitoring, HEALTHCHECK des Containers). Die
+    # Version steht dabei, damit nach einem Update von aussen zu sehen ist,
+    # welcher Stand wirklich laeuft.
+    return {"ok": True, "version": config.VERSION}
 
 
 @app.get("/status")
-def status():
+def status(user: User = Depends(require_user)):
+    # Nur angemeldet: die Antwort nennt die interne Jellyfin-Adresse und
+    # Zahlen zur Bibliothek. Die Oberflaeche fragt hier nur auf der
+    # Startseite nach dem letzten Abgleich, also immer mit Sitzung.
     with get_session() as s:
         state = s.get(SyncState, 1)
         total = len(s.exec(select(Movie)).all())
@@ -366,6 +397,10 @@ def me(user: Optional[User] = Depends(get_current_user_or_none)):
         # Eigene Wahl oder Vorgabe; "sprache_gewaehlt" sagt, ob es eine eigene ist.
         "sprache": texte.fuer_nutzer(user),
         "sprache_gewaehlt": bool(texte.normalisieren(getattr(user, "language", ""))),
+        # Fuer den Abspann der Oberflaeche. Hier und nicht in /app-info: diese
+        # Abfrage stellt die Oberflaeche ohnehin bei jedem Laden und nach jeder
+        # Anmeldung, /app-info dagegen prueft dabei die KI-Dienste.
+        "version": config.VERSION,
     }
 
 
@@ -460,6 +495,9 @@ def remove_user(user_id: int, admin: User = Depends(require_admin)):
         # Delete watch states
         for ws in s.exec(select(WatchState).where(WatchState.user_id == user_id)).all():
             s.delete(ws)
+        # Sichtbare Titel ebenso: sonst erbte ein spaeter angelegtes Konto mit
+        # derselben internen ID die Rechte des entfernten.
+        sichtbarkeit.entfernen(s, user_id)
         s.delete(user)
         s.commit()
     return {"ok": True}
@@ -559,8 +597,13 @@ def list_movies(
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
 ):
+    # Nur, was das Jellyfin-Konto sehen darf - im SQL und nicht hinterher,
+    # damit limit/offset und die Gesamtzahl zur gefilterten Liste passen.
+    sichtbar = sichtbarkeit.laden(user.id).sql(Movie.id, sichtbarkeit.FILM)
     with get_session() as s:
         stmt = select(Movie)
+        if sichtbar is not None:
+            stmt = stmt.where(sichtbar)
         if q:
             like = f"%{q}%"
             stmt = stmt.where(or_(
@@ -592,7 +635,10 @@ def list_movies(
             }[sort]
             stmt = stmt.order_by(col.desc() if order == "desc" else col.asc())
             movies = s.exec(stmt.offset(offset).limit(limit)).all()
-        total = len(s.exec(select(Movie)).all())
+        alle = select(Movie.id)
+        if sichtbar is not None:
+            alle = alle.where(sichtbar)
+        total = len(s.exec(alle).all())
 
         # Build watch state lookup for this user
         ws_all = s.exec(
@@ -667,7 +713,9 @@ def list_movies(
 def get_movie(movie_id: str, user: User = Depends(require_user)):
     with get_session() as s:
         m = s.get(Movie, movie_id)
-        if not m:
+        # Fuer das Konto verborgen = nicht vorhanden. Dieselbe 404 wie fuer
+        # eine unbekannte ID, damit sich gesperrte Titel nicht erraten lassen.
+        if not m or not sichtbarkeit.laden(user.id).film(movie_id):
             raise HTTPException(404, _text("film_fehlt"))
         ws = s.get(WatchState, (user.id, movie_id))
     return {
@@ -695,6 +743,7 @@ def get_movie(movie_id: str, user: User = Depends(require_user)):
 
 
 @app.get("/movies/{movie_id}/detail")
+@_mit_sicht
 def get_movie_detail(movie_id: str, user: User = Depends(require_user)):
     """Rich detail payload for the dedicated film page.
 
@@ -707,9 +756,10 @@ def get_movie_detail(movie_id: str, user: User = Depends(require_user)):
     from recommendations import _mechanical_reason
     from user_profile import build_profile
 
+    sicht = sichtbarkeit.laden(user.id)
     with get_session() as s:
         m = s.get(Movie, movie_id)
-        if not m:
+        if not m or not sicht.film(movie_id):      # verborgen = 404, siehe get_movie
             raise HTTPException(404, _text("film_fehlt"))
         ws = s.get(WatchState, (user.id, movie_id))
         collection = None
@@ -723,7 +773,12 @@ def get_movie_detail(movie_id: str, user: User = Depends(require_user)):
                 # Phase 6: Fortschritt in der Reihe. Die Startseite zeigt das
                 # in "Weiterschauen" laengst — auf der Detailseite stand
                 # bislang nur der nackte Reihen-Name.
-                collection.update(_collection_progress(s, user.id, c.id, movie_id))
+                collection.update(_collection_progress(s, user.id, c.id, movie_id, sicht))
+                # Die Zahl der Teile aus der Tabelle zaehlt auch verborgene
+                # mit. Nur ersetzen, wenn wirklich etwas verborgen ist: ohne
+                # Einschraenkung bleibt der bisherige Wert aus Jellyfin stehen.
+                if sicht.verborgen():
+                    collection["movie_count"] = collection["total_count"]
 
     # Match score — profile vector may be missing before first cron run
     sim = profile_movie_similarity(user.id, movie_id)
@@ -790,17 +845,22 @@ def get_movie_detail(movie_id: str, user: User = Depends(require_user)):
 
 
 def _collection_progress(s, user_id: int, collection_id: str,
-                         current_id: str) -> dict:
+                         current_id: str, sicht=None) -> dict:
     """Fortschritt des Nutzers innerhalb einer Filmreihe.
 
     Liefert alle Teile nach Jahr sortiert mit Gesehen-Kennzeichen, den Zaehler
     und den naechsten ungesehenen Teil. Damit beantwortet die Detailseite
     „du hast 4 von 7" und „dir fehlt noch Teil 3", ohne dass der Nutzer die
     Reihe im Kopf haben muss.
+
+    Teile, die das Konto nicht sehen darf, zaehlen nicht mit: sonst stuende
+    dort „dir fehlt noch Teil 3" samt Poster eines gesperrten Films.
     """
+    sicht = sicht or sichtbarkeit.laden(user_id)
     members = [
         mv for mv in s.exec(select(Movie)).all()
         if collection_id in [x.strip() for x in (mv.collection_ids or "").split(",") if x.strip()]
+        and sicht.film(mv.id)
     ]
     if len(members) < 2:
         return {"parts": [], "watched_count": 0, "total_count": len(members),
@@ -871,10 +931,14 @@ def toggle_favorite(
     Behaviour: if the Jellyfin call fails (e.g. server down) we still apply
     the change locally and surface a warning — the next nightly watch-state
     sync will reconcile.
+
+    Fuer das Konto verborgene Titel: 404 wie auf der Detailseite. Sonst
+    setzte das Backend mit seinem Admin-Schluessel in Jellyfin ein Herz an
+    einem Titel, den das Konto dort gar nicht sehen darf.
     """
     with get_session() as s:
         m = s.get(Movie, movie_id)
-        if not m:
+        if not m or not sichtbarkeit.laden(user.id).film(movie_id):
             raise HTTPException(404, _text("film_fehlt"))
         ws = s.get(WatchState, (user.id, movie_id))
         if ws is None:
@@ -930,7 +994,8 @@ def set_movie_rating(movie_id: str, body: RatingRequest,
         raise HTTPException(400, _text("bewertung_bereich"))
 
     with get_session() as s:
-        if not s.get(Movie, movie_id):
+        # Verborgen = 404, aus demselben Grund wie beim Favoriten.
+        if not s.get(Movie, movie_id) or not sichtbarkeit.laden(user.id).film(movie_id):
             raise HTTPException(404, _text("film_fehlt"))
         ws = s.get(WatchState, (user.id, movie_id))
         if ws is None:
@@ -960,6 +1025,7 @@ def set_movie_rating(movie_id: str, body: RatingRequest,
 
 
 @app.get("/recommendations/by-time")
+@_mit_sicht
 def recommendations_by_time(
     minutes: int = Query(..., ge=20, le=400),
     k: int = Query(6, ge=1, le=20),
@@ -978,6 +1044,7 @@ def recommendations_by_time(
 
     profile = build_profile(user.id)
     hidden = dismissed_ids(user.id)
+    sicht = sichtbarkeit.laden(user.id)
 
     with get_session() as s:
         rows = s.exec(
@@ -986,9 +1053,10 @@ def recommendations_by_time(
             .where(Movie.runtime_min <= minutes)
         ).all()
 
+    # pool_size zaehlt damit auch nur sichtbare Filme.
     candidates = [
         mv for mv in rows
-        if mv.id not in profile["seen_ids"] and mv.id not in hidden
+        if mv.id not in profile["seen_ids"] and mv.id not in hidden and sicht.film(mv.id)
     ]
 
     try:
@@ -1053,7 +1121,11 @@ def get_watchlist(user: User = Depends(require_user)):
         ).all()
     rows.sort(key=lambda r: r.added_at, reverse=True)
     from recommendations import _hydrate
-    items = _hydrate([{"movie_id": r.item_id, "score": 0.0} for r in rows])
+    # Gemerkt ist nicht gleich sichtbar: wurde die Freigabe spaeter entzogen,
+    # bleibt der Eintrag stehen (er kommt mit der Freigabe zurueck), wird
+    # aber nicht gezeigt.
+    items = sichtbarkeit.laden(user.id).filtern(
+        _hydrate([{"movie_id": r.item_id, "score": 0.0} for r in rows]))
     added = {r.item_id: r.added_at for r in rows}
     for it in items:
         it["added_at"] = added.get(it["movie_id"])
@@ -1118,8 +1190,12 @@ def list_series(
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
 ):
+    # Wie bei /movies: Sichtbarkeit im SQL, damit Seiten und total stimmen.
+    sichtbar = sichtbarkeit.laden(user.id).sql(Series.id, sichtbarkeit.SERIE)
     with get_session() as s:
         stmt = select(Series)
+        if sichtbar is not None:
+            stmt = stmt.where(sichtbar)
         if q:
             like = f"%{q}%"
             stmt = stmt.where(or_(
@@ -1141,7 +1217,10 @@ def list_series(
             }[sort]
             stmt = stmt.order_by(col.desc() if order == "desc" else col.asc())
             rows = s.exec(stmt.offset(offset).limit(limit)).all()
-        total = len(s.exec(select(Series)).all())
+        alle = select(Series.id)
+        if sichtbar is not None:
+            alle = alle.where(sichtbar)
+        total = len(s.exec(alle).all())
 
     # Pull match-scores once for every visible series — single batch op.
     sims: dict[str, float] = {}
@@ -1218,7 +1297,7 @@ def list_series(
 def get_series(series_id: str, user: User = Depends(require_user)):
     with get_session() as s:
         ser = s.get(Series, series_id)
-        if not ser:
+        if not ser or not sichtbarkeit.laden(user.id).serie(series_id):   # siehe get_movie
             raise HTTPException(404, _text("serie_fehlt"))
     return {
         "id": ser.id, "name": ser.name,
@@ -1246,6 +1325,7 @@ def get_series(series_id: str, user: User = Depends(require_user)):
 
 
 @app.get("/series/{series_id}/detail")
+@_mit_sicht
 def get_series_detail(series_id: str, user: User = Depends(require_user)):
     """Rich detail payload for the dedicated series page — match-score +
     mechanical match-reason + tagline + Jellyfin play-URL."""
@@ -1255,7 +1335,7 @@ def get_series_detail(series_id: str, user: User = Depends(require_user)):
 
     with get_session() as s:
         ser = s.get(Series, series_id)
-        if not ser:
+        if not ser or not sichtbarkeit.laden(user.id).serie(series_id):   # siehe get_movie
             raise HTTPException(404, _text("serie_fehlt"))
         sp = s.get(SeriesProgress, (user.id, series_id))
 
@@ -1335,6 +1415,7 @@ def continue_or_quit(user: User = Depends(require_user)):
     from datetime import timedelta
     cutoff = datetime.utcnow() - timedelta(days=30)
     items = []
+    sicht = sichtbarkeit.laden(user.id)
     with get_session() as s:
         sp_rows = s.exec(
             select(SeriesProgress)
@@ -1344,6 +1425,10 @@ def continue_or_quit(user: User = Depends(require_user)):
             .where(SeriesProgress.episodes_watched <= 3)
         ).all()
         for sp in sp_rows:
+            # Der Fortschritt bleibt nach entzogener Freigabe stehen; gezeigt
+            # wird die Serie trotzdem nicht.
+            if not sicht.serie(sp.series_id):
+                continue
             stalled = (
                 sp.state == "abandoned"
                 or (sp.last_played is not None and sp.last_played < cutoff)
@@ -1412,8 +1497,13 @@ def continue_watching(user: User = Depends(require_user)):
 
     - Movies: WatchState.playback_position_ticks > 0 AND not played
     - Series: SeriesProgress.state == 'watching'
+
+    Alles nur, soweit das Jellyfin-Konto es sehen darf: Fortschritt und
+    Merker bleiben nach entzogener Freigabe in der Datenbank, und eine Reihe
+    zaehlt nur ihre sichtbaren Teile.
     """
     items: list[dict] = []
+    sicht = sichtbarkeit.laden(user.id)
     with get_session() as s:
         # Series in watching state
         sp_rows = s.exec(
@@ -1423,7 +1513,7 @@ def continue_watching(user: User = Depends(require_user)):
         ).all()
         for sp in sp_rows:
             ser = s.get(Series, sp.series_id)
-            if not ser:
+            if not ser or not sicht.serie(ser.id):
                 continue
             items.append({
                 "type": "series",
@@ -1452,7 +1542,7 @@ def continue_watching(user: User = Depends(require_user)):
         ).all()
         for ws in ws_rows:
             m = s.get(Movie, ws.movie_id)
-            if not m:
+            if not m or not sicht.film(m.id):
                 continue
             pct = 0
             if ws.runtime_ticks > 0:
@@ -1493,7 +1583,7 @@ def continue_watching(user: User = Depends(require_user)):
         all_collections = s.exec(select(Collection)).all()
         # Index movie → collection_ids quickly
         movies_by_collection: dict[str, list[Movie]] = {}
-        all_movies_in_db = s.exec(select(Movie)).all()
+        all_movies_in_db = [m for m in s.exec(select(Movie)).all() if sicht.film(m.id)]
         for m in all_movies_in_db:
             for cid in (m.collection_ids or "").split(","):
                 cid = cid.strip()
@@ -1583,7 +1673,10 @@ def get_series_episodes(series_id: str, user: User = Depends(require_user)):
     season/episode numbers + UserData where available."""
     with get_session() as s:
         ser = s.get(Series, series_id)
-        if not ser:
+        # Jellyfin filtert die Folgen selbst (Abfrage mit dem Konto der
+        # Person); die Serie muss trotzdem vorher sichtbar sein, sonst
+        # verriete schon die Antwort, dass es sie gibt.
+        if not ser or not sichtbarkeit.laden(user.id).serie(series_id):
             raise HTTPException(404, _text("serie_fehlt"))
     try:
         raw = fetch_series_episodes(series_id, jf_user_id=user.jellyfin_user_id)
@@ -1623,7 +1716,8 @@ def toggle_series_favorite(
     and counts toward the user profile."""
     with get_session() as s:
         ser = s.get(Series, series_id)
-        if not ser:
+        # Verborgen = 404, wie beim Film-Favoriten.
+        if not ser or not sichtbarkeit.laden(user.id).serie(series_id):
             raise HTTPException(404, _text("serie_fehlt"))
         sp = s.get(SeriesProgress, (user.id, series_id))
         if sp is None:
@@ -1749,6 +1843,14 @@ def get_trailer(request: Request, item_id: str, user: User = Depends(require_use
     klappt, macht der Reverse-Proxy davor — direkt ueber Port 8095 fehlt er,
     und Safari spielt ein Video ohne 206-Antwort gar nicht erst ab.
     """
+    # Die ID geht in eine Jellyfin-Abfrage mit dem Admin-Schluessel. Was keine
+    # Jellyfin-ID ist, kann auch keinen Trailer haben - also gleich 404.
+    if not ist_item_id(item_id):
+        raise HTTPException(404, _text("kein_trailer"))
+    # Der Trailer eines Titels, den das Konto nicht sehen darf, gibt es fuer
+    # diese Person genauso wenig wie den Titel selbst.
+    if not sichtbarkeit.darf_sehen(user.id, item_id):
+        raise HTTPException(404, _text("kein_trailer"))
     try:
         # Medienwurzel bei jedem Aufruf aus den Einstellungen: im Admin-Bereich
         # geaendert, gilt sie sofort.
@@ -1768,7 +1870,12 @@ def get_trailer(request: Request, item_id: str, user: User = Depends(require_use
         log.warning("trailer file %s unreadable: %s", pfad, e)
         raise HTTPException(404, _text("kein_trailer"))
 
-    kopf = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=86400"}
+    # "private" statt "public", aus demselben Grund wie beim Bild-Proxy: die
+    # Antwort setzt eine Anmeldung voraus und haengt seit 1.0.1 auch davon
+    # ab, was das Konto sehen darf. Ein geteilter Zwischenspeicher davor
+    # (Reverse-Proxy) duerfte sie sonst an andere Personen weitergeben; der
+    # Browser behaelt sie weiterhin einen Tag.
+    kopf = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=86400"}
     bereich = _trailer_bereich(request.headers.get("range"), groesse)
     if bereich is False:
         return Response(status_code=416,
@@ -1791,14 +1898,36 @@ def get_trailer(request: Request, item_id: str, user: User = Depends(require_use
 @app.get("/image/{movie_id}")
 def proxy_image(movie_id: str,
                 type: str = Query("Primary", pattern="^(Primary|Backdrop|Thumb|Logo)$"),
-                w: Optional[int] = Query(None, ge=32, le=3840)):
+                w: Optional[int] = Query(None, ge=32, le=3840),
+                user: User = Depends(require_user)):
     """Bild-Proxy mit Breitenbegrenzung.
 
     Ohne ``w`` greift eine Voreinstellung je Bildtyp. Vorher lieferte der Proxy
     stets das Original: auf der Favoritenseite 30,7 MB fuer 55 Poster, im Mittel
     achtfach groesser als dargestellt. Poster werden nirgends breiter als ~300 px
     gezeigt, 500 px deckt auch hochaufloesende Bildschirme ab.
+
+    Seit 1.0.1 nur mit Anmeldung. Bis dahin konnte jeder, der den Port
+    erreichte, ueber den Admin-Schluessel des Backends beliebige Bilder aus
+    Jellyfin abrufen. Die Oberflaeche merkt davon nichts: Bilder laedt sie
+    nur auf Seiten hinter der Anmeldung, und ein <img> auf demselben
+    Ursprung schickt das Sitzungs-Cookie mit. Anmelde- und Einrichtungsseite
+    zeigen nur mitgelieferte Dateien (Banner, Logo).
     """
+    # Nur echte Jellyfin-IDs weiterreichen; sonst baute eine ID wie
+    # "x?api_key=..." oder ".." eine andere Jellyfin-Adresse. 404 statt 422,
+    # damit die Oberflaeche wie bei jedem fehlenden Bild ihren Platzhalter
+    # zeigt (z. B. fuer einen TMDB-Vorschlag ohne Poster).
+    if not ist_item_id(movie_id):
+        raise HTTPException(404, _text("bild_fehlt"))
+    # Bilder nur zu Titeln, die das Jellyfin-Konto der Person sehen darf; ein
+    # Poster verraet einen gesperrten Film genauso wie seine Detailseite.
+    # Dieselbe 404 wie fuer ein fehlendes Bild, damit die Oberflaeche ihren
+    # Platzhalter zeigt und sich gesperrte IDs nicht von unbekannten
+    # unterscheiden lassen. darf_sehen fragt gezielt nach diesem einen Titel,
+    # weil eine Liste den Proxy fuer jedes Poster einzeln aufruft.
+    if not sichtbarkeit.darf_sehen(user.id, movie_id):
+        raise HTTPException(404, _text("bild_fehlt"))
     max_width = w or (1920 if type == "Backdrop" else 500)
     try:
         ctype, body = open_image(movie_id, type, max_width=max_width)
@@ -1807,19 +1936,25 @@ def proxy_image(movie_id: str,
         # Jellyfin nicht hat, ist aber kein Serverausfall — und nur bei 404
         # kann das Frontend guten Gewissens seinen Platzhalter zeigen.
         raise HTTPException(404, _text("bild_fehlt"))
+    except KeinBild as e:
+        # Antwort ohne Rasterbild-Typ (siehe jellyfin._BILDTYPEN): nicht unter
+        # der eigenen Adresse ausliefern, sondern wie einen Abruffehler melden.
+        log.warning("image fetch for %s (%s) returned no image: %s", movie_id, type, e)
+        raise HTTPException(502, _text("bild_fehler"))
     except Exception as e:
-        # Der Endpunkt ist absichtlich ohne Anmeldung erreichbar. Die
-        # httpx-Meldung trug bisher die interne Jellyfin-Adresse samt Host und
-        # Port in die Antwort — jede fremde Anfrage auf eine unbekannte ID hat
-        # damit die Serverinterna verraten. Details bleiben jetzt im Protokoll.
+        # Die httpx-Meldung trug bis 1.0.0 die interne Jellyfin-Adresse samt
+        # Host und Port in die Antwort. Details bleiben im Protokoll.
         log.warning("image fetch failed for %s (%s): %s", movie_id, type, e)
         raise HTTPException(502, _text("bild_fehler"))
 
     # Inhaltstyp von Jellyfin uebernehmen statt pauschal image/jpeg: Logos
     # kommen als PNG, und nur so bleibt ihre Transparenz erhalten.
+    # "private" statt "public": die Antwort setzt jetzt eine Anmeldung
+    # voraus, und ein geteilter Zwischenspeicher (Reverse-Proxy) duerfte sie
+    # sonst an Anfragen ohne Sitzung weitergeben.
     return StreamingResponse(
         body, media_type=ctype,
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 
@@ -1950,8 +2085,13 @@ def metrics():
 
 @app.get("/facets")
 def facets(user: User = Depends(require_user)):
+    # Die Zahlen gehoeren zur gefilterten Liste (/movies): nur sichtbare Filme.
+    sichtbar = sichtbarkeit.laden(user.id).sql(Movie.id, sichtbarkeit.FILM)
     with get_session() as s:
-        movies = s.exec(select(Movie)).all()
+        stmt = select(Movie)
+        if sichtbar is not None:
+            stmt = stmt.where(sichtbar)
+        movies = s.exec(stmt).all()
     genres: dict[str, int] = {}
     years: dict[int, int] = {}
     # Wie viele Filme haben eine Tonspur in welcher Sprache? Die Oberflaeche
@@ -1983,10 +2123,26 @@ def facets(user: User = Depends(require_user)):
 
 @app.get("/collections")
 def list_collections(user: User = Depends(require_user)):
+    sicht = sichtbarkeit.laden(user.id)
     with get_session() as s:
         cols = s.exec(select(Collection)).all()
+        # Nur wenn fuer die Person wirklich etwas verborgen ist: dann zaehlen
+        # nur ihre sichtbaren Teile, und eine Reihe ganz ohne sichtbaren Teil
+        # faellt weg (schon ihr Name kann verraten, was gesperrt ist). Ohne
+        # Einschraenkung bleibt die Zahl aus Jellyfin, wie bisher.
+        if sicht.verborgen():
+            je_reihe: dict[str, int] = {}
+            for mv in s.exec(select(Movie)).all():
+                if not sicht.film(mv.id):
+                    continue
+                for cid in {x.strip() for x in (mv.collection_ids or "").split(",") if x.strip()}:
+                    je_reihe[cid] = je_reihe.get(cid, 0) + 1
+            cols = [c for c in cols if je_reihe.get(c.id)]
+            zahl = {c.id: je_reihe[c.id] for c in cols}
+        else:
+            zahl = {c.id: c.movie_count for c in cols}
     return [
-        {"id": c.id, "name": c.name, "movie_count": c.movie_count, "overview": c.overview}
+        {"id": c.id, "name": c.name, "movie_count": zahl[c.id], "overview": c.overview}
         for c in sorted(cols, key=lambda c: c.name)
     ]
 
@@ -2034,7 +2190,11 @@ def embed_status(admin: User = Depends(require_admin)):
 def similar_movies(movie_id: str, k: int = Query(15, ge=1, le=50), user: User = Depends(require_user)):
     """Find movies similar to the given movie via vector search."""
     from embeddings import search_similar
-    results = search_similar(movie_id, k=k)
+    sicht = sichtbarkeit.laden(user.id)
+    # Ausgangsfilm verborgen: keine Nachbarn (die verrieten, worum es geht).
+    if not sicht.film(movie_id):
+        return {"movie_id": movie_id, "similar": []}
+    results = search_similar(movie_id, k=k, exclude_ids=sicht.verborgen())
     return {"movie_id": movie_id, "similar": results}
 
 
@@ -2043,19 +2203,29 @@ def semantic_search(q: str, k: int = Query(15, ge=1, le=50), user: User = Depend
     """Semantic search across all movies by text query."""
     from embeddings import search_by_text
     # Nutzereingabe: deutsche Funktionswoerter raus, sonst dominieren sie
-    # den Vektor (siehe embeddings.normalize_user_query).
-    results = search_by_text(normalize_user_query(q), k=k)
+    # den Vektor (siehe embeddings.normalize_user_query). Verborgene Titel
+    # ueberspringt die Suche, damit trotzdem k Treffer kommen.
+    results = search_by_text(normalize_user_query(q), k=k,
+                             exclude_ids=sichtbarkeit.laden(user.id).verborgen())
     return {"query": q, "results": results}
 
 
 @app.get("/ollama/status")
-def ollama_status():
+def ollama_status(user: User = Depends(require_user)):
     """Sind Sprachmodell und Einbettung benutzbar?
 
-    Der Pfad heisst aus Gewohnheit noch "ollama" — die Oberflaeche fragt ihn
-    so ab. Gemeint ist inzwischen der eingestellte Anbieter, egal welcher:
-    ``available`` = ein Sprachmodell (Haupt oder Rueckfall) ist da,
-    ``einbettung`` = Suche und Passung funktionieren.
+    Der Pfad heisst aus Gewohnheit noch "ollama". Gemeint ist inzwischen der
+    eingestellte Anbieter, egal welcher: ``available`` = ein Sprachmodell
+    (Haupt oder Rueckfall) ist da, ``einbettung`` = Suche und Passung
+    funktionieren.
+
+    Seit 1.0.1 nur mit Anmeldung: bei einem Ollama-Modell fragt der Aufruf
+    den Ollama-Server an, und ohne Anmeldung liess sich das von aussen
+    beliebig oft ausloesen. Vor der Anmeldung braucht ihn niemand: die
+    Oberflaeche ruft ihn gar nicht mehr auf (sie nimmt /setup/status und
+    /app-info), und ein Monitoring hat /metrics (cinematekai_dependency_up).
+    /metrics macht dieselben Proben weiterhin ohne Anmeldung, weil Prometheus
+    keine Sitzung hat; weggefallen ist nur der zweite, ungenutzte offene Weg.
     """
     return {"available": llm_client.is_available(),
             "einbettung": anbieter.einbettung_verfuegbar()}
@@ -2174,13 +2344,16 @@ def search_episode(
     with series-name + S/E label so users can find 'die Bienen-Folge von
     Black Mirror' style queries."""
     from embeddings import search_by_text
-    raw = search_by_text(normalize_user_query(q), k=k, media_type="episode")
+    # Folgen gelten als sichtbar, wenn ihre Serie es ist (sichtbarkeit.py).
+    sicht = sichtbarkeit.laden(user.id)
+    raw = search_by_text(normalize_user_query(q), k=k, media_type="episode",
+                         exclude_ids=sicht.verborgen(folgen=True))
     if not raw:
         return {"query": q, "results": []}
     ids = [it["movie_id"] for it in raw]
     with get_session() as s:
         eps = s.exec(select(Episode).where(Episode.id.in_(ids))).all()
-        ep_by_id = {e.id: e for e in eps}
+        ep_by_id = {e.id: e for e in eps if sicht.serie(e.series_id)}
         # Series-name lookup
         sids = {e.series_id for e in eps}
         sers = s.exec(select(Series).where(Series.id.in_(sids))).all()

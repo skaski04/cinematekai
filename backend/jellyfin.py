@@ -12,9 +12,10 @@ macht daraus eine 503 mit Verweis auf /setup — sonst ginge eine Anfrage an
 """
 from datetime import datetime
 from typing import Iterable, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import httpx, logging, os, re, uuid
 
+import config
 import settings
 import texte
 
@@ -139,6 +140,38 @@ def _bib_nutzer() -> str:
     if not uid:
         raise NichtEingerichtet(_text("konto_fehlt"))
     return uid
+
+
+# Jellyfin-IDs sind GUIDs. In seinen Antworten (und damit in der Datenbank)
+# stehen sie als 32 Hexzeichen ohne Bindestriche; die Form mit Bindestrichen
+# nimmt Jellyfin in Pfaden ebenso an und ist deshalb auch erlaubt.
+_ITEM_ID = re.compile(
+    r"[0-9a-fA-F]{32}"
+    r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+def ist_item_id(wert) -> bool:
+    """Sieht ``wert`` aus wie eine Jellyfin-ID?
+
+    Fuer Endpunkte, die eine ID aus der Anfrage ungeprueft an Jellyfin
+    weiterreichen (Bild-Proxy, Trailer). Ohne die Pruefung baute eine ID wie
+    "x?foo=1" oder ".." eine andere Jellyfin-Adresse - abgerufen mit dem
+    Admin-Schluessel des Backends. fullmatch statt match mit "$": "$" laesst
+    einen Zeilenumbruch am Ende durchgehen.
+    """
+    return isinstance(wert, str) and _ITEM_ID.fullmatch(wert) is not None
+
+
+def _id_pfad(item_id: str) -> str:
+    """ID fuer den Einbau in einen URL-Pfad, vollstaendig kodiert.
+
+    Fuer echte IDs (Hexzeichen) aendert sich nichts. Es ist die zweite
+    Sicherung neben ``ist_item_id``: rutscht doch einmal etwas anderes
+    durch, wird daraus ein einzelnes, harmloses Pfadstueck statt eines
+    weiteren Pfadabschnitts oder einer Abfrage.
+    """
+    return quote(str(item_id), safe="")
 
 
 def _basis(url: Optional[str]) -> str:
@@ -270,11 +303,14 @@ def sprachen_aus_streams(streams) -> Optional[tuple[str, str]]:
 # Library fetching (uses shared API key)
 # ---------------------------------------------------------------------------
 
-# Die Routen /Users/{userId}/Items, /Users/{userId}/FavoriteItems/{itemId} und
-# /Users/{userId}/Items/{itemId}/Rating fehlen in der OpenAPI-Beschreibung von
-# 12.0. /Users/{userId}/Items antwortet zwar noch, ist aber undokumentiert —
-# darauf zu bauen hiesse, beim naechsten Update wieder still auszufallen.
-# Ersatz: dieselben Endpunkte ohne Nutzer im Pfad, Nutzer als ?userId=.
+# Die Routen /Users/{userId}/Items und /Users/{userId}/Items/{itemId} hat
+# Jellyfin als veraltet markiert: es fuehrt sie nur noch zur
+# Rueckwaertskompatibilitaet und nimmt sie nicht mehr in seine
+# OpenAPI-Beschreibung auf (in der von 12.1 nachgesehen). Entfernt sind sie
+# nicht, sie antworten weiterhin - aber als veraltete Route kann jede kommende
+# Version sie streichen, und dann fiele der Sync still aus. Deshalb die
+# dokumentierte Form: derselbe Endpunkt ohne Nutzer im Pfad, der Nutzer als
+# ?userId=. (Zu Favoriten und Bewertungen siehe set_favorite und set_rating.)
 def _items_url() -> str:
     return f"{_url()}/Items"
 
@@ -548,7 +584,7 @@ def fetch_series_episodes(series_id: str, jf_user_id: Optional[str] = None,
     (gemessen: Black Mirror 90 kB -> 237 kB, Bonanza 1,16 MB -> 1,23 MB).
     """
     user = jf_user_id or _bib_nutzer()
-    url = f"{_url()}/Shows/{series_id}/Episodes"
+    url = f"{_url()}/Shows/{_id_pfad(series_id)}/Episodes"
     felder = "Overview,RunTimeTicks,UserData"
     if mit_streams:
         felder += ",MediaStreams"
@@ -570,7 +606,7 @@ def set_favorite(jf_user_id: str, item_id: str, favorite: bool) -> None:
     Endpoint: POST/DELETE /UserFavoriteItems/{itemId}?userId=...
     (bis 10.11 /Users/{userId}/FavoriteItems/{itemId}, in 12.0 entfernt)
     """
-    url = f"{_url()}/UserFavoriteItems/{item_id}"
+    url = f"{_url()}/UserFavoriteItems/{_id_pfad(item_id)}"
     params = {"userId": jf_user_id}
     with httpx.Client(timeout=15.0, headers=_headers()) as c:
         if favorite:
@@ -600,10 +636,10 @@ def set_rating(jf_user_id: str, item_id: str, rating: Optional[float]) -> None:
             # Rating und Likes wirklich weg. Im Test faellt das sonst nicht
             # auf, weil lokal korrekt geloescht wird und nur Jellyfin zurueckbleibt.
             # 12.0: /Users/{userId}/Items/{itemId}/Rating gibt es nicht mehr.
-            r = c.delete(f"{_url()}/UserItems/{item_id}/Rating",
+            r = c.delete(f"{_url()}/UserItems/{_id_pfad(item_id)}/Rating",
                          params={"userId": jf_user_id})
         else:
-            r = c.post(f"{_url()}/UserItems/{item_id}/UserData",
+            r = c.post(f"{_url()}/UserItems/{_id_pfad(item_id)}/UserData",
                        params={"userId": jf_user_id},
                        json={"Rating": rating, "Likes": rating >= 5})
         r.raise_for_status()
@@ -629,6 +665,31 @@ def fetch_user_items(jf_user_id: str, _jf_access_token: str = "") -> list[dict]:
         return r.json().get("Items", [])
 
 
+def fetch_sichtbare_ids(jf_user_id: str, typ: str) -> list[str]:
+    """IDs aller Filme (``typ="Movie"``) bzw. Serien (``"Series"``), die das
+    Konto ``jf_user_id`` sehen darf.
+
+    Mit ?userId= wendet Jellyfin die Rechte dieses Kontos selbst an:
+    freigegebene Bibliotheken, Altersgrenze und gesperrte Tags. Dieselbe Form
+    wie fetch_user_items, aber ohne Nutzerdaten und Felder - gebraucht nach
+    dem Bibliotheks-Sync, wenn nur die Menge aufgefrischt werden soll (siehe
+    sichtbarkeit.auffrischen). Die Obergrenzen entsprechen denen des
+    Bibliotheks-Syncs, damit beide Seiten gleich weit reichen.
+    """
+    params = {
+        "userId": jf_user_id,
+        "IncludeItemTypes": typ,
+        "Recursive": "true",
+        "EnableImages": "false",
+        "EnableUserData": "false",
+        "Limit": 10000 if typ == "Movie" else 5000,
+    }
+    with httpx.Client(timeout=60.0, headers=_headers()) as c:
+        r = c.get(_items_url(), params=params)
+        r.raise_for_status()
+        return [it["Id"] for it in r.json().get("Items", []) if it.get("Id")]
+
+
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
@@ -650,7 +711,7 @@ def authenticate(username: str, password: str, url: Optional[str] = None) -> dic
     headers = {
         "Authorization": (
             f'MediaBrowser Client="CinematekAI", Device="Web", '
-            f'DeviceId="{_DEVICE_ID}", Version="0.2"'
+            f'DeviceId="{_DEVICE_ID}", Version="{config.VERSION}"'
         ),
         "Content-Type": "application/json",
     }
@@ -784,7 +845,7 @@ def api_schluessel_anlegen(url: str, access_token: str, app: str = "CinematekAI"
     basis = _basis(url)
     kopf = {"Authorization": (
         f'MediaBrowser Client="CinematekAI", Device="Server", '
-        f'DeviceId="{_DEVICE_ID}", Version="1.0", Token="{access_token}"'
+        f'DeviceId="{_DEVICE_ID}", Version="{config.VERSION}", Token="{access_token}"'
     )}
     try:
         with httpx.Client(timeout=15.0, headers=kopf) as c:
@@ -867,7 +928,7 @@ def nutzer_liste(url: Optional[str] = None, api_key: Optional[str] = None) -> li
 # ---------------------------------------------------------------------------
 
 def image_url(item_id: str, image_type: str = "Primary") -> str:
-    return f"{_url()}/Items/{item_id}/Images/{image_type}"
+    return f"{_url()}/Items/{_id_pfad(item_id)}/Images/{_id_pfad(image_type)}"
 
 
 def stream_image(item_id: str, image_type: str = "Primary",
@@ -890,6 +951,29 @@ class ImageNotFound(Exception):
     der Proxy 404 statt 502 melden kann — sonst sieht ein fehlendes Poster
     wie ein Serverausfall aus und das Frontend kann nicht auf seinen
     eigenen Platzhalter umschalten."""
+
+
+class KeinBild(Exception):
+    """Jellyfin hat geantwortet, aber nicht mit einem Rasterbild.
+
+    Eigene Klasse, damit der Proxy das als 502 meldet und im Protokoll
+    erkennbar bleibt, warum. Durchgereicht wuerde sonst eine Antwort mit
+    fremdem Inhaltstyp (HTML-Fehlerseite eines Proxys, JSON) unter der
+    eigenen Adresse der App ausgeliefert.
+    """
+
+
+# Nur diese Typen reicht der Proxy durch. Bewusst eine Liste statt "image/*":
+# image/svg+xml kann Skript enthalten und liefe dann unter dem Ursprung der
+# App - mit Zugriff auf deren Sitzung. Jellyfin liefert Poster, Hintergruende
+# und Logos als JPEG, PNG oder WebP; "image/jpg" ist die verbreitete
+# Falschschreibung, die manche Server senden.
+_BILDTYPEN = ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif",
+              "image/avif", "image/bmp")
+
+
+def _ist_rasterbild(content_type: str) -> bool:
+    return content_type.split(";", 1)[0].strip().lower() in _BILDTYPEN
 
 
 def open_image(item_id: str, image_type: str = "Primary",
@@ -920,7 +1004,15 @@ def open_image(item_id: str, image_type: str = "Primary",
         r.close(); client.close()
         raise
 
-    ctype = r.headers.get("content-type", "image/jpeg")
+    # Ohne Inhaltstyp wurde bisher JPEG angenommen. Jellyfin schickt bei
+    # Bildern immer einen mit; fehlt er, ist die Antwort nicht von dort
+    # oder nicht in Ordnung - also wie jeder andere fremde Typ abweisen.
+    # Geprueft wird hier und nicht erst im Aufrufer: der Generator unten
+    # schliesst die Verbindung nur, wenn er auch gestartet wird.
+    ctype = r.headers.get("content-type", "")
+    if not _ist_rasterbild(ctype):
+        r.close(); client.close()
+        raise KeinBild(f"{image_type} for {item_id}: content-type {ctype!r}")
 
     def body():
         try:
@@ -942,10 +1034,16 @@ TRAILER_DATEI = "trailer.mp4"
 
 
 def fetch_item_path(item_id: str) -> Optional[str]:
-    """Dateipfad des Films, so wie Jellyfin ihn sieht (z. B. /media/filme/...)."""
-    url = f"{_url()}/Users/{_bib_nutzer()}/Items/{item_id}"
+    """Dateipfad des Films, so wie Jellyfin ihn sieht (z. B. /media/filme/...).
+
+    ``GET /Items/{itemId}?userId=`` statt des veralteten
+    ``/Users/{userId}/Items/{itemId}`` (siehe Kommentar ueber _items_url).
+    Die alte Route ist in Jellyfin nur noch ein Verweis auf diese; die
+    Antwort ist dieselbe, ``Path`` steht also weiter darin.
+    """
+    url = f"{_url()}/Items/{_id_pfad(item_id)}"
     with httpx.Client(timeout=20.0, headers=_headers()) as c:
-        r = c.get(url)
+        r = c.get(url, params={"userId": _bib_nutzer()})
         if r.status_code == 404:
             return None
         r.raise_for_status()

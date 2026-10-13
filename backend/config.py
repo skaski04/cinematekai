@@ -11,6 +11,14 @@ from pathlib import Path
 
 log = logging.getLogger("cinematekai.config")
 
+# Versionsnummer an genau einer Stelle. FastAPI, die Client-Koepfe an Jellyfin,
+# /health und die Oberflaeche (ueber /auth/me) lesen sie von hier; vorher
+# standen vier verschiedene Nummern im Projekt ("0.2.0" fuer FastAPI, "0.2"
+# und "1.0" in den Jellyfin-Koepfen, "0.1.0" in frontend/package.json), und
+# keine davon passte zur veroeffentlichten Version. Nur frontend/package.json
+# fuehrt sie fuer npm noch einmal - beim naechsten Release beide anheben.
+VERSION = "1.0.1"
+
 
 # Umgebungsvariablen heissen CINEMATEKAI_*. Die alten CINEAI_*-Namen werden
 # noch gelesen, damit ein alter Container oder ein vergessenes Skript nicht

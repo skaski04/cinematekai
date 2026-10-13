@@ -9,12 +9,19 @@ export let user = $state({
   username: '',
 });
 
+/* Version des laufenden Backends, für den Abspann. Kommt mit /api/auth/me,
+   das ohnehin bei jedem Laden und nach jeder Anmeldung abgefragt wird — so
+   braucht es dafür keine eigene Anfrage. Bleibt beim Abmelden stehen: die
+   Version hängt nicht am Nutzer. */
+export let backend = $state({ version: '' });
+
 export async function fetchMe() {
   try {
     const r = await fetch('/api/auth/me');
     if (!r.ok) { _reset(); return; }
     const d = await r.json();
     if (d.logged_in) {
+      if (d.version) backend.version = d.version;
       user.loggedIn = true;
       user.userId = d.user_id;
       user.displayName = d.display_name;

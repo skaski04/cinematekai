@@ -27,6 +27,7 @@ from embeddings import (search_by_text, normalize_user_query,
                         profile_all_similarities, passung_prozent)
 from user_profile import build_profile, profile_summary_text
 import llm_client
+import sichtbarkeit
 import texte
 
 log = logging.getLogger("cinematekai.chat")
@@ -303,12 +304,15 @@ def _schlecht_bewertete_titel(user_id: int, limit: int = 5) -> list[str]:
     Das Profil nennt nur Vorlieben. Ohne die Gegenprobe fehlt dem Modell jeder
     Anhaltspunkt fuer ein Nein — und es bestaetigt jeden Vorschlag.
     """
+    sicht = sichtbarkeit.laden(user_id)
     with get_session() as s:
         rows = s.exec(
             select(WatchState).where(WatchState.user_id == user_id,
                                      WatchState.user_rating != None,   # noqa: E711
                                      WatchState.user_rating <= 4)
         ).all()
+        # Auch die eigenen Verrisse nennt der Prompt beim Namen.
+        rows = [w for w in rows if sicht.film(w.movie_id)]
         if not rows:
             return []
         # Die schlechtesten zuerst: sie sagen am meisten ueber Abneigungen aus.
@@ -355,8 +359,14 @@ def looks_like_context_dump(text: str) -> bool:
 def _retrieve_context(query: str, user_id: int,
                       sprache: Optional[str] = None) -> list[dict]:
     """Films + series. Episodes are NOT included by default — they go through
-    `_retrieve_episodes` which fires only on episode-shaped questions."""
-    raw = search_by_text(normalize_user_query(query, sprache), k=_rag_top_k())
+    `_retrieve_episodes` which fires only on episode-shaped questions.
+
+    Fuer das Konto verborgene Titel ueberspringt schon die Suche (das Fenster
+    waechst um genau diese), damit der Prompt so viele Treffer bekommt wie
+    bei einem Konto ohne Einschraenkung."""
+    sicht = sichtbarkeit.laden(user_id)
+    raw = search_by_text(normalize_user_query(query, sprache), k=_rag_top_k(),
+                         exclude_ids=sicht.verborgen())
     if not raw:
         return []
     ids = [r["movie_id"] for r in raw]
@@ -452,9 +462,12 @@ def _titel_aus_frage(message: str, user_id: int, limit: int = 3) -> list[dict]:
     frage = _vergleichbar(message)
     if not frage:
         return []
+    sicht = sichtbarkeit.laden(user_id)
     with get_session() as s:
-        movies = s.exec(select(Movie)).all()
-        series = s.exec(select(Series)).all()
+        # Nennt die Frage einen verborgenen Titel, bekommt das Modell keine
+        # Zeile dazu - dann sagt es ehrlich, dass er nicht in der Bibliothek ist.
+        movies = [m for m in s.exec(select(Movie)).all() if sicht.film(m.id)]
+        series = [x for x in s.exec(select(Series)).all() if sicht.serie(x.id)]
         treffer = []
         for m in movies:
             n = _vergleichbar(m.name)
@@ -485,15 +498,21 @@ def _titel_aus_frage(message: str, user_id: int, limit: int = 3) -> list[dict]:
             for _, art, row in treffer]
 
 
-def _retrieve_episodes(query: str, sprache: Optional[str] = None) -> list[dict]:
-    """Episode RAG — only called when the question looks episode-shaped."""
+def _retrieve_episodes(query: str, sprache: Optional[str] = None,
+                       user_id: Optional[int] = None) -> list[dict]:
+    """Episode RAG — only called when the question looks episode-shaped.
+
+    ``user_id``: Folgen verborgener Serien ueberspringt die Suche. Ohne
+    Angabe (Altaufrufer) gilt kein Filter."""
+    sicht = sichtbarkeit.laden(user_id)
     raw = search_by_text(normalize_user_query(query, sprache), k=RAG_EPISODE_K,
-                         media_type="episode")
+                         media_type="episode", exclude_ids=sicht.verborgen(folgen=True))
     if not raw:
         return []
     ids = [r["movie_id"] for r in raw]
     with get_session() as s:
-        eps = s.exec(select(Episode).where(Episode.id.in_(ids))).all()
+        eps = [e for e in s.exec(select(Episode).where(Episode.id.in_(ids))).all()
+               if sicht.serie(e.series_id)]
         sids = {e.series_id for e in eps}
         sers = s.exec(select(Series).where(Series.id.in_(sids))).all()
     ser_by_id = {ser.id: ser for ser in sers}
@@ -531,9 +550,12 @@ def _catalog_block(user_id: int) -> str:
     Prompt sprengen."""
     if not llm_client.grosser_kontext():
         return ""
+    # "KOMPLETTE Sammlung" heisst hier: alles, was dieses Konto sehen darf.
+    # Sonst beantwortete das Modell Bestandsfragen mit gesperrten Titeln.
+    sicht = sichtbarkeit.laden(user_id)
     with get_session() as s:
-        movies = s.exec(select(Movie)).all()
-        series = s.exec(select(Series)).all()
+        movies = [m for m in s.exec(select(Movie)).all() if sicht.film(m.id)]
+        series = [x for x in s.exec(select(Series)).all() if sicht.serie(x.id)]
         ws = {w.movie_id: w for w in s.exec(
             select(WatchState).where(WatchState.user_id == user_id)).all()}
         sp = {p.series_id: p for p in s.exec(
@@ -573,11 +595,16 @@ def _catalog_block(user_id: int) -> str:
     return _CATALOG_HEADER.format(rows=rows)
 
 
+@sichtbarkeit.mit_sicht
 def _build_system_prompt(user_id: int, message: str,
                          sprache: Optional[str] = None) -> str:
     """Systemprompt fuer eine Frage. ``sprache``: Sprache der Antwort ("de"/"en");
     ohne Angabe die der laufenden Anfrage (texte.aktuell). Der Chat-Faden und
-    der naechtliche Vorlauf haben keine Anfrage und muessen sie angeben."""
+    der naechtliche Vorlauf haben keine Anfrage und muessen sie angeben.
+
+    Alles im Prompt - Profil, Treffer, genannte Titel, Folgen, Katalog - ist
+    auf die Titel beschraenkt, die das Jellyfin-Konto der Person sehen darf
+    (sichtbarkeit.py); geladen wird die Menge dafuer einmal (mit_sicht)."""
     sprache = texte.normalisieren(sprache) or texte.aktuell()
     profile = build_profile(user_id)
     candidates = _retrieve_context(message, user_id, sprache)
@@ -594,7 +621,7 @@ def _build_system_prompt(user_id: int, message: str,
         profil_text += "\nSchlecht bewertet: " + ", ".join(schlecht)
     episodes_block = ""
     if _is_episode_question(message):
-        eps = _retrieve_episodes(message, sprache)
+        eps = _retrieve_episodes(message, sprache, user_id)
         if eps:
             episodes_block = _EPISODES_HEADER.format(episodes=_format_episodes(eps))
     prompt = SYSTEM_TEMPLATE.format(
@@ -870,6 +897,7 @@ def stream_assistant(row_id: int, timeout_s: float = 600.0,
 # Legacy / debug helpers (keep callable from /chat/context endpoint)
 # ---------------------------------------------------------------------------
 
+@sichtbarkeit.mit_sicht
 def chat_context(user_id: int, message: str) -> dict:
     profile = build_profile(user_id)
     candidates = _retrieve_context(message, user_id)
