@@ -1,11 +1,14 @@
-"""CinematekAI embeddings — ChromaDB, Einbettungsmodell aus den Einstellungen.
+"""CinematekAI embeddings — eigener Vektorspeicher, Einbettungsmodell aus den Einstellungen.
+
+Die Vektoren liegen seit 1.1.0 im eigenen Vektorspeicher (vektorspeicher.py,
+Tabelle ``vektor`` in der Datenbank) statt in ChromaDB; Begruendung dort.
 
 Welches Modell bei welchem Anbieter einbettet, steht seit Oktober 2026 im
 Admin-Bereich (Abschnitt ``embedding``, siehe settings.py und anbieter.py) und
 kann sich zur Laufzeit aendern. Deshalb haelt dieses Modul das Modell nicht
 mehr ab dem Import fest:
 
-  * Je Modell gibt es eine eigene Chroma-Sammlung (siehe _sammlungsname).
+  * Je Modell gibt es eine eigene Sammlung (siehe _sammlungsname).
     Aendert sich das Modell, stellt sammlungen_wechseln() auf dessen
     Sammlungen um. Die alten bleiben liegen — zurueckwechseln geht sofort.
   * Es laeuft hoechstens EIN Einbett-Lauf zur Zeit (Cron, Admin-Knopf,
@@ -14,9 +17,10 @@ mehr ab dem Import fest:
     Skala wird je Modell gemessen (kalibrieren) und in den Einstellungen
     abgelegt; fuer bge-m3 gelten die von Hand gesetzten Werte.
 
-Alle Schreibzugriffe auf Chroma passieren in diesem Prozess: am 29.09. war
-belegt, dass Schreibzugriffe aus einem zweiten Prozess nicht im Suchindex des
-laufenden Backends ankommen.
+Alle Schreibzugriffe auf die Vektoren passieren in diesem Prozess. Der
+Speicher haelt sie im Arbeitsspeicher; was ein zweiter Prozess in die Tabelle
+schriebe, saehe das laufende Backend erst nach einem Neustart (bei Chroma war
+dasselbe am 29.09. belegt).
 """
 from __future__ import annotations
 
@@ -28,13 +32,13 @@ import time
 from datetime import datetime, timezone
 from typing import Iterable
 
-import chromadb
 from sqlmodel import func, select
 
 import anbieter
 import settings
 import texte
-from config import CHROMA_DIR
+import vektorspeicher
+from config import CHROMA_DIR, DB_PATH, VEKTOR_EXPORT_DIR
 from database import Movie, Series, Episode, User, get_session
 
 log = logging.getLogger("cinematekai.embeddings")
@@ -164,21 +168,16 @@ def _t(schluessel: str, sprache: str | None = None, **werte) -> str:
     return texte.waehle(_T, schluessel, sprache, **werte)
 
 
-CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-# Chroma meldet sonst anonyme Nutzungsdaten an einen Analysedienst des
-# Herstellers - aus einer App, die bewusst nichts nach draussen schickt, was
-# der Admin nicht eingerichtet hat. Ausdruecklich hier abgeschaltet, nicht nur
-# per ANONYMIZED_TELEMETRY im Dockerfile: das gilt sonst nicht fuer einen
-# Start ausserhalb des Containers (Entwicklung, eigene Installation).
-_client = chromadb.PersistentClient(
-    path=str(CHROMA_DIR),
-    settings=chromadb.config.Settings(anonymized_telemetry=False),
-)
+# Liest erst beim ersten Zugriff aus der Datenbank (vektorspeicher.py); der
+# Import dieses Moduls beruehrt die Datei also nicht. Den Ordner data/chroma
+# legt diese Version nicht mehr an: liegt er vor, stammt er von 1.0.x (siehe
+# beim_start).
+_speicher = vektorspeicher.Vektorspeicher(DB_PATH)
 
 
 # ── Je Modell eine eigene Sammlung ─────────────────────────────────────────
 # bge-m3 liefert 1024 Dimensionen, nomic-embed-text 768. Landen beide in
-# derselben Chroma-Sammlung, weist Chroma die Abfrage mit einer Meldung zur
+# derselben Sammlung, weist der Speicher den Vektor mit einer Meldung zur
 # Dimension ab — und selbst wenn nicht, waeren Abstaende zwischen Vektoren
 # zweier Modelle bedeutungslos. Der Sammlungsname haengt deshalb am Modell.
 #
@@ -186,6 +185,10 @@ _client = chromadb.PersistentClient(
 # Dadurch bleiben die bisherigen Vektoren unangetastet liegen: stellt man im
 # Admin-Bereich das Modell zurueck, ist die Suche sofort wieder da, ohne
 # einen Neu-Einbett-Lauf von ueber einer Stunde.
+#
+# Die Namen sind dieselben wie zu Chroma-Zeiten (bis 1.0.x): ein Export der
+# alten Sammlungen (tools/chroma_export.py) landet so 1:1 dort, wo diese
+# Version sucht.
 _NAME_UNERLAUBT = re.compile(r"[^a-z0-9]+")
 
 
@@ -197,12 +200,15 @@ def _sammlungsname(basis: str, modell: str) -> str:
     endung = _NAME_UNERLAUBT.sub("_", kurz).strip("_")
     if not endung:
         return basis
-    # Chroma laesst hoechstens 63 Zeichen zu und will keinen Trenner am Ende.
+    # Hoechstens 63 Zeichen und kein Trenner am Ende - die Regel von Chroma,
+    # beibehalten, damit die Namen gleich bleiben.
     return f"{basis}__{endung}"[:63].rstrip("_")
 
 
-def _sammlung_holen(name: str):
-    return _client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
+def _sammlung_holen(name: str) -> vektorspeicher.Sammlung:
+    # Abstand ist immer Kosinus, wie bei den Chroma-Sammlungen
+    # ("hnsw:space": "cosine"), siehe vektorspeicher.py.
+    return _speicher.sammlung(name)
 
 
 # Schuetzt das Umstellen der Sammlungen: _modell und die vier Globalen
@@ -229,52 +235,6 @@ def _stand():
     """(Modell, Filmsammlung, Profilsammlung) — zusammenpassend."""
     with _sammlung_lock:
         return _modell, _collection, _user_profiles
-
-
-def _modell_beim_start_melden() -> None:
-    """Einmal beim Hochfahren ins Log: welches Modell, welche Sammlungen, wie
-    viele Vektoren liegen darin.
-
-    Laeuft im eigenen Faden, weil das Zaehlen die Sammlung laedt und den
-    Start sonst aufhielte. Das kurze Warten auf einen Log-Empfaenger stammt
-    aus der Zeit, als main.py das Logging erst nach dem Import einrichtete;
-    es schadet nicht und haelt die Meldung unabhaengig von der Reihenfolge.
-    """
-    def _melden() -> None:
-        wurzel = logging.getLogger()
-        for _ in range(20):
-            if wurzel.handlers:
-                break
-            time.sleep(0.5)
-        modell, filme_s, profile_s = _stand()
-        if not modell:
-            log.info("Einbettungen: kein Einbettungsmodell eingerichtet — Suche "
-                     "und Passung bleiben leer, bis eines eingetragen ist "
-                     "(Admin -> Einstellungen -> Embeddings).")
-            return
-        try:
-            filme = filme_s.count()
-            profile = profile_s.count()
-        except Exception as e:
-            log.warning("Einbettungen: Sammlung nicht lesbar: %s", e)
-            return
-        log.info("Einbettungen: Modell %s, Sammlung %r mit %d Vektoren, "
-                 "Profile %r mit %d Vektoren",
-                 modell, MOVIE_COLLECTION, filme, PROFILE_COLLECTION, profile)
-        if filme == 0:
-            log.warning("Einbettungen: Sammlung %r ist LEER — die Vektorsuche "
-                        "liefert nichts, bis eingebettet wurde (Admin -> "
-                        "Einstellungen -> Embeddings: 'Fehlende einbetten').",
-                        MOVIE_COLLECTION)
-        if profile == 0:
-            log.warning("Einbettungen: keine Profilvektoren in %r — die "
-                        "Passungswerte bleiben leer, bis der Cron-Auftrag "
-                        "'embed_user_profiles' gelaufen ist.", PROFILE_COLLECTION)
-
-    threading.Thread(target=_melden, name="embed-info", daemon=True).start()
-
-
-_modell_beim_start_melden()
 
 
 # ---------------------------------------------------------------------------
@@ -326,8 +286,7 @@ def _ablegen(modell: str, eintrag_id: str, text: str, vektor: list[float],
     with _sammlung_lock:
         if _modell != modell:
             raise _ModellGewechselt(_Meldung("modell_gewechselt"))
-        _collection.upsert(ids=[eintrag_id], embeddings=[vektor],
-                           documents=[text], metadatas=[meta])
+        _collection.schreiben(eintrag_id, vektor, meta, text)
         if tabelle is not None:
             with get_session() as s:
                 zeile = s.get(tabelle, eintrag_id)
@@ -392,7 +351,7 @@ def _film_meta(m: Movie) -> dict:
 
 
 def embed_movie(m: Movie) -> bool:
-    """Embed one movie into ChromaDB. Returns True on success."""
+    """Embed one movie into the vector store. Returns True on success."""
     try:
         _eintrag_einbetten(_stand()[0], m.id, movie_to_text(m), _film_meta(m))
     except Exception as e:
@@ -490,7 +449,7 @@ def embed_episode(ep: Episode, series_name: str = "") -> bool:
 
 
 def embed_series(ser: Series) -> bool:
-    """Embed one series into ChromaDB. Same collection as movies — `type`
+    """Embed one series into the vector store. Same collection as movies — `type`
     metadata distinguishes them so cross-format ranking comes for free."""
     try:
         _eintrag_einbetten(_stand()[0], ser.id, series_to_text(ser), _serien_meta(ser))
@@ -714,7 +673,7 @@ def _einbett_lauf(force: bool) -> dict:
 
     elapsed = time.time() - t0
     try:
-        anzahl = _stand()[1].count()
+        anzahl = _stand()[1].anzahl()
     except Exception:
         anzahl = -1
     log.info("Einbetten fertig: %d ok, %d fehlgeschlagen, %.1f s, "
@@ -853,8 +812,7 @@ def einbettung_starten(force: bool = False) -> dict:
 def _marken_aus_sammlung(filme) -> int:
     """Marke 'embedded' aller Zeilen aus der Mitgliedschaft in ``filme``
     setzen. Gibt die Zahl der geaenderten Zeilen zurueck."""
-    # include=[] liefert nur die IDs — die Vektoren braucht der Abgleich nicht.
-    ids = set(filme.get(include=[]).get("ids") or [])
+    ids = set(filme.ids())
     geaendert = 0
     with get_session() as s:
         for tabelle in (Movie, Series, Episode):
@@ -888,8 +846,17 @@ def sammlungen_wechseln() -> dict:
         profile_name = _sammlungsname("user_profiles", modell)
         filme = _sammlung_holen(filme_name)
         profile = _sammlung_holen(profile_name)
+        alte = (MOVIE_COLLECTION, PROFILE_COLLECTION)
         _modell, _collection, _user_profiles = modell, filme, profile
         MOVIE_COLLECTION, PROFILE_COLLECTION = filme_name, profile_name
+        # Die Matrizen der bisherigen Sammlungen aus dem Arbeitsspeicher nehmen
+        # (in der Datenbank bleiben sie liegen, zurueckwechseln laedt sie neu).
+        # Sonst hielte der Prozess bis zum Neustart die Vektoren beider Modelle
+        # im RAM - bei nomic und bge-m3 zusammen rund 30 MB, ohne dass jemand
+        # die alten noch liest.
+        for name in alte:
+            if name not in (filme_name, profile_name):
+                _speicher.vergessen(name)
         _aehnlichkeiten_verwerfen()
         _skala_verwerfen()
         try:
@@ -930,6 +897,171 @@ def _einstellung_geaendert(alt: dict, neu: dict) -> None:
 settings.beobachten("embedding", _einstellung_geaendert)
 
 
+# ---------------------------------------------------------------------------
+# Start: Uebernahme aus Chroma (1.0.x), Marken, Stand im Log
+# ---------------------------------------------------------------------------
+
+def _chroma_altbestand() -> bool:
+    """Liegt unter data/chroma noch der Index einer 1.0.x-Version?"""
+    return (CHROMA_DIR / "chroma.sqlite3").is_file()
+
+
+def _marken_nach_start(filme, dazu: set[str], zuruecksetzen: bool = True) -> tuple[int, int]:
+    """Marken 'embedded' beim Start an den Vektorspeicher angleichen - aber nur
+    in den zwei Richtungen, die sicher stimmen:
+
+      * Marke ohne Vektor -> False. So sieht es nach einem Update von 1.0.x
+        ohne Export aus: die Datenbank haelt alle Titel fuer eingebettet, der
+        neue Speicher ist leer. Ohne den Abgleich bettete embed_missing nie
+        wieder etwas ein, und Suche und Passung blieben fuer immer leer.
+      * gerade aus einem Export uebernommen -> True. Lief diese Version schon
+        einmal ohne Export (Marken zurueckgesetzt) und kommt der Export erst
+        danach, bettete der naechste Lauf sonst alles neu ein, obwohl die
+        Vektoren eben uebernommen wurden.
+
+    Bewusst NICHT allgemein "Vektor da -> True": nach "Alle neu einbetten"
+    (force) stehen die Marken absichtlich auf False, waehrend die alten
+    Vektoren noch da sind; ein Neustart mittendrin soll den Lauf nicht fuer
+    erledigt erklaeren.
+
+    ``zuruecksetzen=False`` laesst Marken ohne Vektor stehen und zaehlt sie
+    nur - fuer einen Export, der da ist, aber nicht uebernommen werden konnte
+    (siehe beim_start). Gibt (ohne Vektor, gesetzt) zurueck; der erste Wert
+    ist mit ``zuruecksetzen`` die Zahl der zurueckgesetzten Marken.
+    """
+    ids = set(filme.ids())
+    runter = hoch = 0
+    with get_session() as s:
+        for tabelle in (Movie, Series, Episode):
+            for zeile in s.exec(select(tabelle)).all():
+                if zeile.embedded and zeile.id not in ids:
+                    runter += 1
+                    if zuruecksetzen:
+                        zeile.embedded = False
+                elif not zeile.embedded and zeile.id in dazu:
+                    zeile.embedded = True
+                    hoch += 1
+        if (runter and zuruecksetzen) or hoch:
+            s.commit()
+    return runter, hoch
+
+
+def beim_start() -> dict:
+    """Startschritt, aufgerufen von main._startup nach den Migrationen und vor
+    dem Zeitplan:
+
+      1. einen Export der Chroma-Vektoren von 1.0.x uebernehmen, falls unter
+         data/vektor_export einer liegt (vektorspeicher.export_uebernehmen);
+      2. die Marken 'embedded' angleichen (_marken_nach_start) - vor dem
+         Zeitplan, weil ein naechtlicher Lauf sonst nach den alten Marken
+         entschiede, was fehlt;
+      3. Modell, Sammlungen und Zahl der Vektoren ins Log, mit Hinweis, was zu
+         tun ist, wenn der Speicher leer ist.
+
+    Synchron statt im eigenen Faden: Uebernahme und Abgleich muessen fertig
+    sein, bevor der erste Lauf oder das Vorwaermen die Sammlung liest. Die
+    Uebernahme von rund 9000 Vektoren dauert wenige Sekunden und kommt nur
+    einmal vor; sonst kostet der Schritt das Zaehlen und einen Durchgang
+    durch die Marken.
+    """
+    erg: dict = {"uebernahme": None, "marken_zurueck": 0, "marken_gesetzt": 0,
+                 "marken_behalten": 0}
+    try:
+        erg["uebernahme"] = vektorspeicher.export_uebernehmen(_speicher, VEKTOR_EXPORT_DIR)
+    except Exception as e:
+        log.exception("Vektor-Export: Uebernahme fehlgeschlagen")
+        erg["uebernahme"] = {"sammlungen": {}, "fehler": [str(e)], "umbenannt_in": None}
+    uebernahme = erg["uebernahme"] or {}
+    uebernommen = {name: s["uebernommen"] for name, s in
+                   (uebernahme.get("sammlungen") or {}).items() if s.get("uebernommen")}
+    fehler_export = [f for f in (uebernahme.get("fehler") or ())
+                     if not str(f).startswith("umbenennen:")]
+
+    with _sammlung_lock:
+        modell, filme, profile = _modell, _collection, _user_profiles
+        filme_name, profile_name = MOVIE_COLLECTION, PROFILE_COLLECTION
+        # Ein Export, der da ist, dessen Filmsammlung fuer das eingestellte
+        # Modell aber nicht uebernommen werden konnte (Pruefsumme, Platte
+        # voll, Datenbank gesperrt, export.json fehlt ...), bleibt liegen und
+        # wird beim naechsten Start erneut gelesen. Bis dahin die Marken NICHT
+        # zuruecksetzen: sonst bettete schon der naechste taegliche Lauf die
+        # ganze Bibliothek neu ein (mit einem lokalen Modell auf der CPU
+        # Stunden), obwohl die Vektoren im Export liegen. Scheiterte nur eine
+        # andere Sammlung (etwa die eines alten Modells) oder nur das
+        # Umbenennen, ist die eigene da, und es gilt der normale Abgleich.
+        export_haengt = bool(fehler_export) and filme_name not in (uebernahme.get("sammlungen") or {})
+        erg["export_haengt"] = export_haengt
+        if modell:
+            dazu = set(((uebernahme.get("sammlungen") or {}).get(filme_name) or {}).get("ids") or ())
+            try:
+                ohne_vektor, erg["marken_gesetzt"] = _marken_nach_start(
+                    filme, dazu, zuruecksetzen=not export_haengt)
+                erg["marken_behalten" if export_haengt else "marken_zurueck"] = ohne_vektor
+            except Exception as e:
+                log.warning("Einbettungen: Marken beim Start nicht abgeglichen: %s", e)
+
+    if uebernommen:
+        log.info("Einbettungen: %d Vektoren aus dem Chroma-Export uebernommen (%s) - "
+                 "dafuer muss nichts neu eingebettet werden.", sum(uebernommen.values()),
+                 ", ".join(f"{n}: {k}" for n, k in sorted(uebernommen.items())))
+    if not modell:
+        log.info("Einbettungen: kein Einbettungsmodell eingerichtet — Suche "
+                 "und Passung bleiben leer, bis eines eingetragen ist "
+                 "(Admin -> Einstellungen -> Embeddings).")
+        return erg
+    try:
+        anzahl_filme, anzahl_profile = filme.anzahl(), profile.anzahl()
+    except Exception as e:
+        log.warning("Einbettungen: Sammlung nicht lesbar: %s", e)
+        return erg
+    erg["vektoren"], erg["profile"] = anzahl_filme, anzahl_profile
+    log.info("Einbettungen: Modell %s, Sammlung %r mit %d Vektoren, "
+             "Profile %r mit %d Vektoren",
+             modell, filme_name, anzahl_filme, profile_name, anzahl_profile)
+    if erg["marken_zurueck"]:
+        log.info("Einbettungen: %d Eintraege ohne Vektor als fehlend markiert - der "
+                 "naechste Lauf (taeglich oder 'Fehlende einbetten') bettet sie ein",
+                 erg["marken_zurueck"])
+    if erg["marken_gesetzt"]:
+        log.info("Einbettungen: %d uebernommene Eintraege als eingebettet markiert",
+                 erg["marken_gesetzt"])
+    if export_haengt:
+        log.error("Einbettungen: der Vektor-Export unter %s konnte fuer %r nicht "
+                  "uebernommen werden (Fehler siehe oben). Marken 'eingebettet' ohne "
+                  "Vektor bleiben deshalb stehen (%d Eintraege), damit nicht stundenlang "
+                  "neu eingebettet wird; bis zur Uebernahme fehlen diese Titel in Suche "
+                  "und Passung. Der naechste Start versucht es erneut. Ist der Export "
+                  "nicht zu retten: ihn mit 1.0.x neu erstellen - oder den Ordner "
+                  "umbenennen und neu starten, dann wird neu eingebettet.",
+                  VEKTOR_EXPORT_DIR, filme_name, erg["marken_behalten"])
+    elif anzahl_filme == 0 and _chroma_altbestand():
+        log.warning("Einbettungen: Sammlung %r ist LEER. Unter %s liegt noch der "
+                    "Chroma-Index einer Version 1.0.x; diese Version liest ihn nicht "
+                    "mehr. Ohne Export wird die Bibliothek neu eingebettet - im "
+                    "taeglichen Lauf oder sofort mit Admin -> Einstellungen -> "
+                    "Embeddings: 'Fehlende einbetten'; mit einem lokalen Modell auf "
+                    "der CPU dauert das Stunden, bis dahin liefern Suche und Passung "
+                    "nichts. Um das zu vermeiden: 1.0.x noch einmal starten, im "
+                    "Repo-Ordner 'docker exec -i cinematekai python - < "
+                    "tools/chroma_export.py' ausfuehren und danach wieder diese "
+                    "Version starten - sie uebernimmt den Export beim Start.",
+                    filme_name, CHROMA_DIR)
+    elif anzahl_filme == 0:
+        log.warning("Einbettungen: Sammlung %r ist LEER — die Vektorsuche "
+                    "liefert nichts, bis eingebettet wurde (Admin -> "
+                    "Einstellungen -> Embeddings: 'Fehlende einbetten').",
+                    filme_name)
+    elif _chroma_altbestand():
+        log.info("Einbettungen: %s (Chroma-Index von 1.0.x) wird nicht mehr benutzt. "
+                 "Er kann geloescht werden, sobald kein Rueckweg auf 1.0.x mehr "
+                 "noetig ist.", CHROMA_DIR)
+    if anzahl_profile == 0:
+        log.warning("Einbettungen: keine Profilvektoren in %r — die "
+                    "Passungswerte bleiben leer, bis der Cron-Auftrag "
+                    "'embed_user_profiles' gelaufen ist.", profile_name)
+    return erg
+
+
 def _db_zaehlen() -> tuple[int, int]:
     """(Eintraege gesamt, davon eingebettet) ueber Filme, Serien, Episoden."""
     gesamt = eingebettet = 0
@@ -947,7 +1079,7 @@ def einbettung_status() -> dict:
     p = anbieter.preset(abschnitt.get("provider", ""))
     _, filme, _ = _stand()
     try:
-        vektoren = filme.count()
+        vektoren = filme.anzahl()
     except Exception as e:
         log.warning("Einbettungen: Sammlung nicht lesbar: %s", e)
         vektoren = 0
@@ -979,32 +1111,30 @@ def einbettung_status() -> dict:
 
 
 def backfill_type_metadata() -> dict:
-    """One-shot helper: tag every existing item in the chroma collection with
+    """One-shot helper: tag every existing item in the movie collection with
     `type='movie'` if no `type` is set yet. Called from /admin/backfill-types
     after upgrading to Phase TV-A so we don't have to re-embed 393 films."""
     _, filme, _ = _stand()
     try:
-        all_data = filme.get(include=["metadatas"])
+        alle = filme.metadaten()
     except Exception as e:
         log.warning("backfill_type_metadata: get failed: %s", e)
         return {"error": str(e)}
-    ids = all_data.get("ids") or []
-    metas = all_data.get("metadatas") or []
-    new_ids: list[str] = []
-    new_metas: list[dict] = []
-    for i, mid in enumerate(ids):
-        meta = dict(metas[i] or {})
+    neu: dict[str, dict] = {}
+    for mid, alt in alle.items():
+        meta = dict(alt or {})
         if meta.get("type"):
             continue
         # Heuristic: if a row exists in the Series table → series, else movie.
         with get_session() as s:
             is_series = s.get(Series, mid) is not None
         meta["type"] = "series" if is_series else "movie"
-        new_ids.append(mid)
-        new_metas.append(meta)
-    if new_ids:
-        filme.update(ids=new_ids, metadatas=new_metas)
-    return {"tagged": len(new_ids), "total": len(ids)}
+        neu[mid] = meta
+    if neu:
+        # Uebergeben werden die vollstaendigen Metadaten (alte + type), das
+        # Ersetzen im Speicher wirkt also wie das Ergaenzen bei Chroma.
+        filme.metadaten_setzen(neu)
+    return {"tagged": len(neu), "total": len(alle)}
 
 
 def search_similar(movie_id: str, k: int = 15,
@@ -1087,10 +1217,13 @@ def normalize_user_query(query: str, sprache: str | None = None) -> str:
 def search_by_text(query: str, k: int = 15, exclude_ids: list[str] | None = None,
                    _raw_query: bool = False,
                    media_type: str | None = None) -> list[dict]:
-    """Search ChromaDB by arbitrary text query.
+    """Search the vector store by arbitrary text query.
 
-    ``media_type`` filters the chroma collection: 'movie', 'series', or None
-    (no filter — both kinds returned).
+    ``media_type`` filters the collection: 'movie', 'series', 'episode',
+    'any' (everything), or None (movies + series, no episodes).
+
+    ``distance`` ist der Kosinus-Abstand wie zu Chroma-Zeiten (1 - Kosinus,
+    float32), ``score`` = round(1 - distance, 3).
     """
     modell, filme, _ = _stand()
     try:
@@ -1115,29 +1248,31 @@ def search_by_text(query: str, k: int = 15, exclude_ids: list[str] | None = None
     # (daily_for k=60, by_mood bis k*3) wurden dadurch still abgeschnitten —
     # nach dem "ungesehen"-Filter blieben teils nur 15 Kandidaten uebrig,
     # obwohl die Bibliothek 179 ungesehene Filme enthielt. Jetzt nur noch
-    # gegen die tatsaechliche Sammlungsgroesse begrenzt, weil Chroma bei
-    # n_results > Anzahl Dokumente warnt.
+    # gegen die tatsaechliche Sammlungsgroesse begrenzt (so stammt es aus der
+    # Chroma-Zeit, die bei n_results > Anzahl Dokumente warnte; das Fenster
+    # bleibt gleich, damit die Treffer dieselben bleiben).
     n_wanted = k + len(exclude_ids or [])
     try:
-        n_available = filme.count()
+        n_available = filme.anzahl()
     except Exception:
         n_available = n_wanted
-    results = filme.query(
-        query_embeddings=[vec],
-        n_results=max(1, min(n_wanted, n_available)),
-        where=where,
-        include=["documents", "metadatas", "distances"],
-    )
+    try:
+        treffer = filme.suchen(vec, max(1, min(n_wanted, n_available)), where)
+    except Exception as e:
+        # Frueher kam ein Fehler der Abfrage als 500 bei der Oberflaeche an.
+        # Weniger Treffer (keine) sind fuer Startseite und Chat besser als
+        # eine Fehlerseite; der Grund steht im Log.
+        log.warning("Vektorsuche in %r fehlgeschlagen: %s", getattr(filme, "name", "?"), e)
+        return []
     items = []
-    for i, mid in enumerate(results["ids"][0]):
+    for mid, abstand, meta in treffer:
         if exclude_ids and mid in exclude_ids:
             continue
-        meta = results["metadatas"][0][i]
         items.append({
             "movie_id": mid,
-            "name": meta.get("name", ""),
-            "distance": results["distances"][0][i],
-            "score": round(1.0 - results["distances"][0][i], 3),
+            "name": (meta or {}).get("name", ""),
+            "distance": abstand,
+            "score": round(1.0 - abstand, 3),
         })
         if len(items) >= k:
             break
@@ -1145,13 +1280,13 @@ def search_by_text(query: str, k: int = 15, exclude_ids: list[str] | None = None
 
 
 def collection_count() -> int:
-    """Number of items in the ChromaDB collection."""
-    return _stand()[1].count()
+    """Number of items in the movie collection of the current model."""
+    return _stand()[1].anzahl()
 
 
 # ── Aufraeumen: Vektoren ohne Datenbankzeile ───────────────────────────────
 # Verschwindet ein Titel aus Jellyfin, loescht sync.py die Zeile in
-# movie/series/episode — den Vektor in Chroma aber nicht. Die Karteileichen
+# movie/series/episode — den Vektor aber nicht. Die Karteileichen
 # sammeln sich dadurch mit jedem Sync weiter an.
 # Nachgemessen am 01.10.2026: die alte nomic-Sammlung "movies" trug 5767
 # Vektoren bei 3187 Datenbank-IDs, also 2580 Karteileichen (44,7 %). Die am
@@ -1159,10 +1294,10 @@ def collection_count() -> int:
 # sauber (3187 Vektoren, 0 verwaist) — dieser Schritt haelt sie es.
 # Falsche Treffer entstehen dadurch nicht, weil jeder Treffer gegen die
 # Datenbank aufgeloest wird. Es kostet aber Platz und Suchzeit, und
-# _berechne_alle_aehnlichkeiten laedt bei jedem kalten Aufruf ALLE Vektoren.
+# _berechne_alle_aehnlichkeiten rechnet bei jedem kalten Aufruf gegen ALLE Vektoren.
 #
-# Groesse der Loeschhaeppchen: Chroma nimmt auch lange ID-Listen an, aber
-# haeppchenweise bleibt der Speicherbedarf klein und ein Fehler mittendrin
+# Groesse der Loeschhaeppchen: der Speicher nimmt auch lange ID-Listen an,
+# aber haeppchenweise bleibt jede Transaktion kurz, und ein Fehler mittendrin
 # laesst den bereits geschafften Teil geloescht.
 _LOESCH_HAEPPCHEN = 500
 
@@ -1198,14 +1333,11 @@ def verwaiste_vektoren_entfernen() -> int:
     _, filme, _ = _stand()
     name = MOVIE_COLLECTION
     try:
-        # include=[] liefert nur die IDs. Dokumente und Embeddings braucht der
-        # Vergleich nicht — 3187 Vektoren mal 1024 Dimensionen waeren rund
-        # 13 MB, die hier voellig umsonst durch den Speicher gingen.
-        vorhanden = filme.get(include=[])
+        # Nur die IDs - die Vektoren braucht der Vergleich nicht.
+        ids = filme.ids()
     except Exception as e:
         log.warning("Aufraeumen: Sammlung %r nicht lesbar: %s", name, e)
         return 0
-    ids = list(vorhanden.get("ids") or [])
     if not ids:
         log.info("Aufraeumen: Sammlung %r ist leer — nichts zu tun", name)
         return 0
@@ -1241,7 +1373,7 @@ def verwaiste_vektoren_entfernen() -> int:
     for start in range(0, len(waisen), _LOESCH_HAEPPCHEN):
         haeppchen = waisen[start:start + _LOESCH_HAEPPCHEN]
         try:
-            filme.delete(ids=haeppchen)
+            filme.loeschen(haeppchen)
         except Exception as e:
             log.warning("Aufraeumen: Loeschen von %d Vektoren fehlgeschlagen, "
                         "Abbruch nach %d entfernten: %s",
@@ -1257,7 +1389,7 @@ def verwaiste_vektoren_entfernen() -> int:
         _aehnlichkeiten_verwerfen()
     log.info("Aufraeumen: %d verwaiste Vektoren aus %r entfernt "
              "(%.1f %% von %d), Sammlung enthaelt jetzt %d",
-             entfernt, name, anteil * 100, len(ids), filme.count())
+             entfernt, name, anteil * 100, len(ids), filme.anzahl())
     return entfernt
 
 
@@ -1284,22 +1416,22 @@ def embed_user_profile(user_id: int, query_text: str) -> bool:
             log.warning("User profile embedding for user %s verworfen: "
                         "Modell wurde gewechselt", user_id)
             return False
-        _user_profiles.upsert(
-            ids=[str(user_id)],
-            embeddings=[vec],
-            documents=[text],
-        )
+        _user_profiles.schreiben(str(user_id), vec, None, text)
     _aehnlichkeiten_verwerfen()
     return True
 
 
 # ── Zwischenspeicher fuer profile_all_similarities ─────────────────────────
-# Die Berechnung laedt bei jedem Aufruf SAEMTLICHE Vektoren aus Chroma. Die
+# Die Berechnung rechnet bei jedem Aufruf gegen SAEMTLICHE Vektoren. Die
 # Startseite loest sie viermal gleichzeitig aus (Filme, Serien, Weiterschauen,
-# Serienliste); gemessen brauchte ein Aufruf allein 1,2 s, alle vier zusammen
-# aber 9,7 s, weil sie sich um denselben Prozessor stritten. Das Ergebnis
-# aendert sich nur, wenn der naechtliche Cron das Profil neu schreibt oder ein
-# Sync neue Vektoren anlegt — beides verwirft den Speicher.
+# Serienliste); gemessen mit Chroma, das die Vektoren dafuer jedes Mal aus der
+# Datenbank las, brauchte ein Aufruf allein 1,2 s, alle vier zusammen aber
+# 9,7 s, weil sie sich um denselben Prozessor stritten. Der Vektorspeicher
+# haelt die Matrix im Arbeitsspeicher, die Rechnung selbst ist dadurch billig;
+# der Zwischenspeicher bleibt trotzdem, weil er nichts kostet und das Bauen
+# der Ergebnis-Tabelle je Aufruf spart. Das Ergebnis aendert sich nur, wenn
+# der naechtliche Cron das Profil neu schreibt oder ein Sync neue Vektoren
+# anlegt — beides verwirft den Speicher.
 #
 # Die Frist ist nur ein Sicherheitsnetz, denn echte Aenderungen verwerfen den
 # Speicher selbst. Anfangs stand sie auf 15 Minuten: bei der ueblichen Nutzung
@@ -1383,38 +1515,28 @@ def aehnlichkeiten_vorwaermen(user_ids: list[int]) -> dict[int, int]:
 
 
 def _berechne_alle_aehnlichkeiten(user_id: int) -> dict[str, float]:
-    """Cosine similarity between the user's profile vector and *every* movie
-    vector in the collection. Returns ``{movie_id: sim}``. O(N) vector ops
-    in numpy — cheap even for 10 k movies."""
+    """Cosine similarity between the user's profile vector and *every*
+    vector in the movie collection (movies, series, episodes), clipped to
+    [0, 1]. Returns ``{movie_id: sim}``. One matrix-vector product over the
+    normalised vectors the store keeps in memory — cheap even for 10 k titles."""
     import numpy as np
     _, filme, profile = _stand()
     try:
-        u = profile.get(ids=[str(user_id)], include=["embeddings"])
+        uv = profile.vektor(str(user_id))
     except Exception as e:
         log.warning("profile_all_similarities user fetch failed: %s", e)
         return {}
-    ue = u.get("embeddings")
-    if ue is None or len(ue) == 0:
+    # Kein Profil oder ein Nullvektor: wie bisher keine Werte.
+    if uv is None or not np.any(uv):
         return {}
-    uv = np.asarray(ue[0], dtype=np.float32)
-    nu = float(np.linalg.norm(uv))
-    if nu == 0:
-        return {}
-
     try:
-        allm = filme.get(include=["embeddings"])
+        ids, sims = filme.aehnlichkeiten(uv)
     except Exception as e:
         log.warning("profile_all_similarities movies fetch failed: %s", e)
         return {}
-    ids = allm.get("ids") or []
-    mes = allm.get("embeddings")
-    if mes is None or len(ids) == 0:
+    if not ids:
         return {}
-    M = np.asarray(mes, dtype=np.float32)  # (N, D)
-    norms = np.linalg.norm(M, axis=1)
-    norms[norms == 0] = 1.0
-    dots = M @ uv
-    sims = np.clip(dots / (norms * nu), 0.0, 1.0)
+    sims = np.clip(sims, 0.0, 1.0)
     return {ids[i]: float(sims[i]) for i in range(len(ids))}
 
 
@@ -1557,7 +1679,7 @@ def _aufrunden(x: float) -> float:
 
 def skala_berechnen(mediane: list[float], bestwerte: list[float],
                     proben_p99: list[float], proben_top1: list[float]) -> dict:
-    """Skala aus den Rohzahlen einer Messung — reine Rechnung, ohne Chroma.
+    """Skala aus den Rohzahlen einer Messung — reine Rechnung, ohne Vektorspeicher.
 
     ``mediane``/``bestwerte``: je Nutzerprofil Median und Hoechstwert der
     Aehnlichkeit zu allen Vektoren der Sammlung. ``proben_p99``/
@@ -1591,29 +1713,24 @@ def _einheitsvektor(vec):
 
 
 def _messen(modell: str) -> dict:
-    """Rohzahlen fuer die Kalibrierung. Liest Chroma, bettet die zwoelf
-    Proben ein, schreibt nichts."""
+    """Rohzahlen fuer die Kalibrierung. Liest den Vektorspeicher, bettet die
+    zwoelf Proben ein, schreibt nichts."""
     import numpy as np
     with _sammlung_lock:
         if _modell != modell:
             raise _ModellGewechselt(_Meldung("modell_gewechselt"))
         filme, profile = _collection, _user_profiles
 
-    p = profile.get(include=["embeddings"])
-    p_ids = list(p.get("ids") or [])
-    p_vek = p.get("embeddings")
-    if not p_ids or p_vek is None or len(p_vek) == 0:
+    p_ids, p_vek, _ = profile.alle()
+    if not p_ids:
         raise ValueError(_Meldung("kein_profil"))
 
-    d = filme.get(include=["embeddings", "metadatas"])
-    ids = d.get("ids") or []
+    # Die Matrix kommt schon normiert aus dem Speicher (Nullvektoren bleiben
+    # Null) - dasselbe, was hier frueher von Hand geschah.
+    ids, M, metas = filme.alle()
     if not ids:
         raise ValueError(_Meldung("sammlung_leer"))
-    M = np.asarray(d.get("embeddings"), dtype=np.float32)
-    normen = np.linalg.norm(M, axis=1, keepdims=True)
-    normen[normen == 0] = 1.0
-    M = M / normen
-    typen = np.array([(m or {}).get("type", "") for m in (d.get("metadatas") or [])])
+    typen = np.array([(m or {}).get("type", "") for m in metas])
     film_serie = np.isin(typen, ["movie", "series"])
     if not film_serie.any():
         raise ValueError(_Meldung("keine_filme"))
@@ -1749,32 +1866,19 @@ def _nachkalibrieren() -> None:
 def profile_movie_similarity(user_id: int, movie_id: str) -> float | None:
     """Cosine similarity in [0, 1] between a user's profile vector and a
     movie's vector. Returns None if either vector is missing."""
+    import numpy as np
     _, filme, profile = _stand()
     try:
-        u = profile.get(ids=[str(user_id)], include=["embeddings"])
-        m = filme.get(ids=[movie_id], include=["embeddings"])
+        uv = profile.vektor(str(user_id))
+        mv = filme.vektor(movie_id)
     except Exception as e:
         log.warning("profile_movie_similarity lookup failed: %s", e)
         return None
-    # Chroma returns numpy arrays here — "not array" raises ValueError, so
-    # check length / None explicitly.
-    ue = u.get("embeddings")
-    me = m.get("embeddings")
-    if ue is None or me is None or len(ue) == 0 or len(me) == 0:
+    if uv is None or mv is None or uv.size != mv.size:
         return None
-    uv = ue[0]
-    mv = me[0]
-    if uv is None or mv is None or len(uv) == 0 or len(mv) == 0:
+    # Kosinus-Aehnlichkeit. Der Speicher liefert beide Vektoren normiert -
+    # nomic-embed-text liefert sie so, andere Modelle muessen das nicht tun.
+    # Ein Nullvektor bleibt Null und hat keine Richtung: dann wie bisher None.
+    if not np.any(uv) or not np.any(mv):
         return None
-    # Kosinus-Aehnlichkeit. Wir teilen bewusst selbst durch die Betraege,
-    # statt uns auf normierte Vektoren zu verlassen: nomic-embed-text liefert
-    # sie normiert, andere Modelle muessen das nicht tun.
-    import numpy as np
-    uv_a = np.asarray(uv, dtype=np.float32)
-    mv_a = np.asarray(mv, dtype=np.float32)
-    na = float(np.linalg.norm(uv_a))
-    nb = float(np.linalg.norm(mv_a))
-    if na == 0 or nb == 0:
-        return None
-    dot = float(np.dot(uv_a, mv_a))
-    return max(0.0, min(1.0, dot / (na * nb)))
+    return max(0.0, min(1.0, float(np.dot(uv, mv))))

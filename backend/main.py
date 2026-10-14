@@ -2,7 +2,7 @@
 import functools, json, logging, os, threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Query, Depends, Response, Request
+from fastapi import FastAPI, HTTPException, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response, FileResponse
 from sqlmodel import select, or_
@@ -29,11 +29,11 @@ from database import (init_db, get_session, Movie, Series, SeriesProgress, Episo
                       Collection, WatchState, SyncState, User, UserSession,
                       Watchlist, NotInterested)
 from embeddings import normalize_user_query, passung_prozent
-from jellyfin import (stream_image, open_image, ImageNotFound, KeinBild, ist_item_id,
+from jellyfin import (open_image, ImageNotFound, KeinBild, ist_item_id,
                       trailer_pfad, lookup_jellyfin_user,
                       set_favorite as jf_set_favorite, set_rating as jf_set_rating,
                       fetch_series_episodes)
-from sync import sync_library, sync_series_library, sync_watch_state, sync_series_progress
+from sync import sync_library, sync_watch_state, sync_series_progress
 from auth import (
     login as auth_login, logout as auth_logout, COOKIE_NAME,
     require_user, require_admin, get_current_user_or_none,
@@ -249,6 +249,16 @@ def _startup():
                 log.info("Migration angewandt: %s", line)
     except Exception as e:
         log.error("Migrationen fehlgeschlagen: %s", e)
+    # Vektorspeicher: einen Export der Chroma-Vektoren von 1.0.x uebernehmen
+    # und die Marken 'embedded' angleichen (embeddings.beim_start). Nach den
+    # Migrationen (Tabelle aus 007) und vor Vorwaermen und Zeitplan, die sonst
+    # einen noch nicht uebernommenen Bestand laesen. Ein Fehler hier haelt den
+    # Start nicht auf: schlimmstenfalls wird neu eingebettet.
+    try:
+        import embeddings
+        embeddings.beim_start()
+    except Exception as e:
+        log.error("Vektorspeicher: Startschritt fehlgeschlagen: %s", e)
     log.info("CinematekAI backend started")
     # Einstellungen einmal ausdruecklich lesen. Der erste Zugriff uebernimmt
     # bei einer alten Installation die config.yaml; meist ist das beim Import
@@ -1751,7 +1761,7 @@ def toggle_series_favorite(
 
 @app.post("/admin/backfill-types")
 def admin_backfill_types(admin: User = Depends(require_admin)):
-    """One-shot: tag existing chroma items with type='movie' so series
+    """One-shot: tag existing vector store items with type='movie' so series
     filtering works without a full re-embed."""
     from embeddings import backfill_type_metadata
     return backfill_type_metadata()
@@ -2181,6 +2191,7 @@ def embed_status(admin: User = Depends(require_admin)):
         **stand,
         "total_movies": total,
         "embedded_in_db": embedded,
+        # Name aus der Chroma-Zeit, bleibt fuer bestehende Skripte.
         "chroma_count": stand.get("vektoren"),
         "not_embedded": total - embedded,
     }

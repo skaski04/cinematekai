@@ -39,11 +39,11 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # curl nur fuer den HEALTHCHECK. Einen Compiler (frueher build-essential)
-# braucht es nicht mehr: chromadb und seine kompilierten Abhaengigkeiten
-# (chroma-hnswlib 0.7.6, onnxruntime, numpy, tokenizers ...) gibt es fuer
-# Python 3.12 auf x86_64 als fertige Wheels (auf PyPI nachgesehen am
-# 10.10.2026). Faellt ein Bau doch auf das Kompilieren aus dem Quelltext
-# zurueck, hier build-essential wieder ergaenzen.
+# braucht es nicht: die kompilierten Abhaengigkeiten (numpy, pydantic-core,
+# SQLAlchemy/greenlet, PyYAML, uvloop, httptools, watchfiles, websockets) gibt
+# es fuer Python 3.12 auf x86_64 und aarch64 als fertige Wheels (auf PyPI
+# nachgesehen am 14.10.2026). Faellt ein Bau doch auf das Kompilieren aus dem
+# Quelltext zurueck, hier build-essential wieder ergaenzen.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
@@ -61,14 +61,10 @@ COPY --from=oberflaeche /src/build ./static
 # config.yaml gelesen (settings.py); fehlt die Datei, startet alles trotzdem.
 # PYTHONUNBUFFERED, damit Log-Zeilen sofort in `docker logs` stehen und nicht
 # erst, wenn ein Puffer voll ist.
-# ANONYMIZED_TELEMETRY=False schaltet die Nutzungsstatistik von Chroma ab.
-# embeddings.py tut das schon selbst; die Variable gilt zusaetzlich fuer
-# alles, was Chroma im Container sonst noch anlegt.
 ENV CINEMATEKAI_DATA=/app/data \
     CINEMATEKAI_STATIC=/app/static \
     CINEMATEKAI_CONFIG=/app/config.yaml \
-    PYTHONUNBUFFERED=1 \
-    ANONYMIZED_TELEMETRY=False
+    PYTHONUNBUFFERED=1
 
 EXPOSE 8095
 

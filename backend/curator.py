@@ -27,7 +27,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import httpx
 from sqlmodel import select
@@ -396,10 +396,8 @@ def curate(user_id: int, profile: dict, hidden: set[str],
     # Einmal je Lauf lesen: Prompt-Budget und Antwortlaenge muessen zum
     # selben Fenster passen, auch wenn jemand waehrenddessen umstellt.
     kontext = llm_client.kontext_tokens()
-    from database import User
     sicht = sichtbarkeit.laden(user_id)
     with get_session() as s:
-        user = s.get(User, user_id)
         # Auch fruehere Filme des Tages stehen im Prompt; ein inzwischen
         # verborgener gehoert nicht dazu.
         recent_fod = [_label(m) for mid in recent_fod_ids

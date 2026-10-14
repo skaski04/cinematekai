@@ -207,7 +207,22 @@ docker rm -f cinematekai
 ```
 
 Deine Daten bleiben erhalten; Änderungen an der Datenbank werden beim Start automatisch eingespielt. Neben `latest`
-gibt es feste Tags wie `1`, `1.0` und `1.0.0`, falls du lieber bewusst aktualisierst.
+gibt es feste Tags wie `1`, `1.1` und `1.1.0`, falls du lieber bewusst aktualisierst.
+
+**Von 1.0.x auf 1.1 oder neuer:** Seit 1.1 liegen die Vektoren in der Datenbank statt in einem eigenen
+ChromaDB-Index. Damit sie erhalten bleiben, exportierst du sie einmal **vor** dem Update, solange der alte Container
+noch läuft (aber nicht mitten in einem Einbett-Lauf) - im Ordner mit einer Kopie dieses Repositorys (oder lade
+`tools/chroma_export.py` vorher herunter):
+
+```bash
+docker exec -i cinematekai python - < tools/chroma_export.py
+```
+
+Danach wie oben aktualisieren; die neue Version übernimmt den Export beim ersten Start. Ohne Export wird die
+Bibliothek automatisch neu eingebettet - im täglichen Lauf oder sofort über Admin -> Einstellungen -> Embeddings ->
+„Fehlende einbetten“. Mit einem lokalen Modell auf der CPU dauert das Stunden, und bis dahin bleiben Suche und
+Passung leer. Der alte Ordner `data/chroma` bleibt unverändert liegen, sodass du weiter zu 1.0.x zurückkehren
+kannst. Wenn alles läuft, kannst du den Ordner löschen.
 
 ## Selbst bauen
 
@@ -276,7 +291,7 @@ einen Reverse-Proxy, der den Zugriff beschränkt, ins Internet stellen.
   nach deren Attributionsregeln verwendet: zusammen mit dem Hinweis oben im Abspann am Seitenende und als
   Quellenangabe neben „Fehlt in deiner Sammlung“, stets kleiner als das CinematekAI-Logo. Es fällt nicht unter die
   Lizenz dieses Projekts.
-- **Software** - FastAPI, SQLModel, ChromaDB, APScheduler, SvelteKit und weitere Open-Source-Pakete; die vollständige
+- **Software** - FastAPI, SQLModel, NumPy, APScheduler, SvelteKit und weitere Open-Source-Pakete; die vollständige
   Liste steht in `backend/requirements.txt` und `frontend/package.json`.
 
 ## Lizenz

@@ -200,7 +200,22 @@ docker rm -f cinematekai
 ```
 
 Your data is kept; database changes are applied automatically at start. Besides `latest` there are fixed tags such
-as `1`, `1.0` and `1.0.0` if you prefer to update deliberately.
+as `1`, `1.1` and `1.1.0` if you prefer to update deliberately.
+
+**Updating from 1.0.x to 1.1 or later:** since 1.1 the vectors live in the database instead of a separate ChromaDB
+index. To keep them, export them once **before** updating, while the old container is still running (but not in
+the middle of an embedding run) - from the folder with a copy of this repository (or download
+`tools/chroma_export.py` first):
+
+```bash
+docker exec -i cinematekai python - < tools/chroma_export.py
+```
+
+Then update as above; the new version imports the export when it first starts. Without the export the library is
+embedded again automatically - in the daily run, or right away with Admin -> Settings -> Embeddings -> "Embed
+missing". With a local model on a CPU that takes hours, and until then search and match values stay empty. The old
+folder `data/chroma` is left untouched, so you can still go back to 1.0.x; once everything works you can delete
+the folder.
 
 ## Build it yourself
 
@@ -267,7 +282,7 @@ internet without a reverse proxy that restricts access.
   is used according to TMDB's attribution rules: together with the notice above in the credits at the bottom of the
   pages, and as a source mark next to "Missing from your collection", always smaller than the CinematekAI logo. It is
   not covered by this project's license.
-- **Software** - FastAPI, SQLModel, ChromaDB, APScheduler, SvelteKit and other open-source packages; see
+- **Software** - FastAPI, SQLModel, NumPy, APScheduler, SvelteKit and other open-source packages; see
   `backend/requirements.txt` and `frontend/package.json` for the full list.
 
 ## License

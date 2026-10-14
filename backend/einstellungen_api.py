@@ -363,8 +363,8 @@ def admin_settings_speichern(abschnitt: str, werte: dict = Body(...),
         raise HTTPException(400, _text("abschnitt", abschnitt=abschnitt))
     einbettung = None
     if abschnitt == "embedding":
-        # Import erst hier: embeddings zieht chromadb nach, und die uebrigen
-        # Abschnitte brauchen es nicht.
+        # Import erst hier: embeddings zieht numpy und den Vektorspeicher
+        # nach, und die uebrigen Abschnitte brauchen es nicht.
         import embeddings
         alt = (settings.get("embedding")["model"] or "").strip()
         neu = str(werte.get("model") or "").strip() if "model" in werte else alt
@@ -558,8 +558,9 @@ def admin_jellyfin_nutzer(admin: User = Depends(require_admin)):
 # ---------------------------------------------------------------------------
 # Einbettung (nur Admins)
 # ---------------------------------------------------------------------------
-# Importe innerhalb der Funktionen: embeddings zieht chromadb nach, und dieses
-# Modul soll auch ohne (etwa in Tests) importierbar bleiben.
+# Importe innerhalb der Funktionen: embeddings zieht numpy und den
+# Vektorspeicher nach, und dieses Modul soll auch ohne (etwa in Tests)
+# importierbar bleiben.
 
 @router.get("/admin/ki-protokoll")
 def admin_ki_protokoll(tage: int = Query(30, ge=1, le=180), admin: User = Depends(require_admin)):

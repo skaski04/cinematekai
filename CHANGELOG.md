@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-10-14
+
+> **Updating from 1.0.x? Export your vector index first**, or it will be rebuilt from scratch (with a local
+> embedding model on a CPU that can take hours). While the old version is still running, from the folder with this
+> repository:
+>
+> ```bash
+> docker exec -i cinematekai python - < tools/chroma_export.py
+> ```
+>
+> Then update as usual; 1.1.0 imports the export on its first start. Without an export nothing breaks - search and
+> match values fill up again as the library is re-embedded.
+
+### Changed
+
+- **Own vector store instead of ChromaDB.** Vectors now live in a table of the app's SQLite database and are searched
+  exactly (ChromaDB searched approximately). Results and match percentages stay the same.
+- **Much smaller image:** 31 instead of about 95 Python packages; ChromaDB with onnxruntime, Kubernetes client,
+  gRPC and its telemetry library is gone (estimated ~90 MB instead of 163 MB compressed).
+- Build tools of the web interface updated (Vite 6.4); this closes the open security advisories for Vite, esbuild,
+  source-map-js and cookie. All of them only affected building or the local development server.
+
+### Removed
+
+- The ChromaDB dependency, including its three security advisories (they concerned ChromaDB's server mode, which
+  CinematekAI never used) and the telemetry error lines in the log.
+
 ## [1.0.1] - 2026-10-13
 
 ### Security

@@ -322,8 +322,8 @@ def einbetten(text: str, abschnitt: dict | None = None) -> list[float]:
     """Einbettungsvektor fuer einen Text, mit dem eingestellten Modell.
 
     Nimmt den Text unveraendert; die Praefixe setzen die Aufrufer ueber
-    ``praefix_dokument`` / ``praefix_anfrage``, weil der eingebettete Text in
-    Chroma mitgespeichert wird und dort zum Vektor passen muss.
+    ``praefix_dokument`` / ``praefix_anfrage``, weil der eingebettete Text im
+    Vektorspeicher mitgespeichert wird und dort zum Vektor passen muss.
     """
     abschnitt = abschnitt or _einbettung_abschnitt()
     v = verbindung(abschnitt)

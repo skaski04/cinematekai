@@ -145,6 +145,26 @@ def _m006_sichtbarkeit(conn) -> str:
     return ("angelegt: " + ", ".join(angelegt)) if angelegt else "bereits vorhanden"
 
 
+def _m007_vektorspeicher(conn) -> str:
+    """Tabelle ``vektor`` fuer den eigenen Vektorspeicher (vektorspeicher.py).
+
+    Seit 1.1.0 liegen die Einbettungen hier statt in ChromaDB (data/chroma).
+    Die Tabelle startet leer. Die alten Vektoren uebernimmt erst der
+    Startschritt embeddings.beim_start aus einem Export
+    (tools/chroma_export.py), nicht diese Migration: sie laeuft nur einmal,
+    ein Export kann aber auch spaeter noch kommen. Ohne Export baut der
+    naechste Einbett-Lauf den Bestand neu auf.
+
+    Dieselbe Anweisung wie im Speicher selbst (CREATE TABLE IF NOT EXISTS),
+    damit Schema und Speicher nicht auseinanderlaufen koennen.
+    """
+    from vektorspeicher import TABELLE_SQL
+    if _table_exists(conn, "vektor"):
+        return "bereits vorhanden"
+    conn.execute(text(TABELLE_SQL))
+    return "angelegt"
+
+
 MIGRATIONS: list[tuple[int, str, callable]] = [
     (1, "Ungenutzte Jellyfin-Token aus usersession entfernen",
      _m001_blank_jf_access_tokens),
@@ -153,6 +173,7 @@ MIGRATIONS: list[tuple[int, str, callable]] = [
     (4, "Ton- und Untertitelsprachen fuer Filme und Serien", _m004_sprachspalten),
     (5, "Sprache der Oberflaeche je Nutzer", _m005_sprache_je_nutzer),
     (6, "Sichtbare Titel je Jellyfin-Konto", _m006_sichtbarkeit),
+    (7, "Eigener Vektorspeicher statt ChromaDB", _m007_vektorspeicher),
 ]
 
 

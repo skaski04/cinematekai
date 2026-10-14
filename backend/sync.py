@@ -5,7 +5,7 @@ from sqlmodel import select
 from datetime import timedelta
 from database import (
     Movie, Series, SeriesProgress, Episode, Collection, WatchState, SyncState,
-    User, UserSession, get_session,
+    User, get_session,
 )
 from jellyfin import (
     fetch_all_movies, normalize, extract_user_data,

@@ -26,7 +26,7 @@ from sqlmodel import select
 import llm_client
 import settings
 import texte
-from database import get_session, Movie, RecommendationCache, User
+from database import get_session, Movie, RecommendationCache
 from tmdb_client import collaborative_scores, poster_url
 
 log = logging.getLogger("cinematekai.missing")
@@ -115,8 +115,6 @@ def _decorate(e: dict, reason: str | None, sprache: str | None = None) -> dict:
 def build_messages(user_id: int, pool: list[dict],
                    sprache: str | None = None) -> tuple[list[dict], dict[str, dict]]:
     import curator
-    with get_session() as s:
-        user = s.get(User, user_id)
     # Neutral statt des Anzeigenamens: der Prompt geht an einen externen
     # Anbieter, und manche Anbieter verbieten personenbezogene Daten oder
     # verwenden Ein-/Ausgaben zum Training. Fuer die Auswahl spielt der Name

@@ -17,7 +17,7 @@ log = logging.getLogger("cinematekai.config")
 # und "1.0" in den Jellyfin-Koepfen, "0.1.0" in frontend/package.json), und
 # keine davon passte zur veroeffentlichten Version. Nur frontend/package.json
 # fuehrt sie fuer npm noch einmal - beim naechsten Release beide anheben.
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 
 # Umgebungsvariablen heissen CINEMATEKAI_*. Die alten CINEAI_*-Namen werden
@@ -65,7 +65,14 @@ if not _NEW_DB.exists() and _OLD_DB.exists():
 else:
     DB_PATH = _NEW_DB
 
+# Vektorindex der Versionen bis 1.0.x (ChromaDB). Seit 1.1.0 liegen die Vektoren
+# in der Datenbank (vektorspeicher.py); der Ordner wird weder gelesen noch
+# angelegt noch geloescht. Er bleibt fuer den Rueckweg auf 1.0.x liegen, und
+# embeddings.beim_start erkennt an ihm ein Update ohne Export.
 CHROMA_DIR = DATA_DIR / "chroma"
+# Hierher schreibt tools/chroma_export.py (in einem 1.0.x-Container) die alten
+# Vektoren; embeddings.beim_start uebernimmt sie und benennt den Ordner um.
+VEKTOR_EXPORT_DIR = DATA_DIR / "vektor_export"
 
 # Gebaute Oberflaeche (SvelteKit, statisch). Im Container liegt sie neben dem
 # Backend; fehlt der Ordner, liefert server.py nur die API aus.

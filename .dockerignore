@@ -13,7 +13,8 @@ frontend/build
 **/__pycache__
 **/*.py[cod]
 
-# Laufzeitdaten (DB, Chroma, Logs, Berichte)
+# Laufzeitdaten: unter data/ die DB samt Vektoren, ein alter Chroma-Ordner
+# (1.0.x) und ein Vektor-Export; dazu Logs und Berichte
 data
 logs
 reports

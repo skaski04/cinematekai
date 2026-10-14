@@ -3,7 +3,6 @@ uvicorn[standard]==0.32.0
 httpx==0.27.2
 sqlmodel==0.0.22
 pyyaml==6.0.2
-chromadb==0.5.23
 apscheduler==3.10.4
 
 # python-multipart stand hier bis 1.0.0. FastAPI braucht es nur fuer
@@ -11,13 +10,19 @@ apscheduler==3.10.4
 # Endpunkt an - alles kommt als JSON. Ein Paket weniger, das Sicherheits-
 # updates braucht. Erst wieder aufnehmen, wenn ein Endpunkt Formulare liest.
 
-# Direkt importiert, kamen bisher nur als Abhaengigkeit mit: numpy ueber
-# chromadb (embeddings.py rechnet damit), pytz ueber APScheduler (cron.py,
-# Rueckfall fuer die Zeitzone). Ohne Versionsnummer, damit weiter chromadb
-# bzw. APScheduler bestimmen, welche Version passt. Die Aufloesung bleibt
-# dieselbe wie vorher, nur steht die Abhaengigkeit jetzt da, wo sie gebraucht
-# wird.
-numpy
+# chromadb stand hier bis 1.0.1 (0.5.23). Seit 1.1.0 haelt vektorspeicher.py
+# die Vektoren selbst (SQLite + numpy); chromadb zog rund 64 Pakete nach
+# (onnxruntime, kubernetes, grpcio, posthog ...), etwa zwei Drittel des
+# pip-Layers im Image, fuer Funktionen, die die App nie nutzte.
+
+# numpy rechnet die Vektorsuche (vektorspeicher.py, embeddings.py). Frueher kam
+# es ohne Versionsnummer als Abhaengigkeit von chromadb mit; jetzt traegt es
+# die Suche und steht deshalb fest - die Version, die pip beim Bau von 1.0.1
+# (12.10.2026) gewaehlt hat. Braucht Python 3.12 oder neuer (wie das Image).
+numpy==2.5.4
+# pytz kommt als Abhaengigkeit von APScheduler mit (cron.py, Rueckfall fuer
+# die Zeitzone). Ohne Versionsnummer, damit weiter APScheduler bestimmt,
+# welche Version passt; es steht hier, weil cron.py es direkt importiert.
 pytz
 # Zeitzonendaten fuer zoneinfo (Zeitplan, Pruefung der Zeitzone in settings.py).
 # Das offizielle python:3.12-slim bringt die Systemdaten mit; das Paket ist der

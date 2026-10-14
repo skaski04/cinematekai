@@ -1,4 +1,4 @@
-"""CinematekAI chat engine — RAG over ChromaDB + Sprachmodell-Strom (welches
+"""CinematekAI chat engine — RAG over the vector store + Sprachmodell-Strom (welches
 Modell, entscheidet llm_client nach den Einstellungen), with 24-hour
 persistence.
 
@@ -387,7 +387,7 @@ def _retrieve_context(query: str, user_id: int,
     series_by_id = {ser.id: ser for ser in series_rows}
     # Einmal pro Aufruf, nicht je Titel: die Funktion ist zwischengespeichert,
     # der erste Aufruf nach dem Sync rechnet aber ueber alle Vektoren.
-    # Faellt Chroma aus, bleibt der Chat nutzbar — dann eben ohne Passung.
+    # Faellt der Vektorspeicher aus, bleibt der Chat nutzbar — dann eben ohne Passung.
     try:
         sims = profile_all_similarities(user_id)
     except Exception as e:

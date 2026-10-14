@@ -901,7 +901,7 @@ def _cache_get(key: str, allow_stale: bool = False) -> Optional[dict]:
 
     If ``allow_stale`` is True, an expired entry is still returned but with
     ``stale=True`` added. This lets the API fall back to yesterday's daily
-    recommendation when the embedding service / Chroma are down.
+    recommendation when the embedding service / vector store are down.
     """
     with get_session() as s:
         row = s.get(RecommendationCache, key)
@@ -1764,7 +1764,6 @@ def _mechanical_reason(profile: dict, film: dict,
     noun_acc = _t("n_acc_" + art, sprache)
 
     user_genres = {g for g, _ in profile.get("top_genres") or []}
-    top_genre = (profile.get("top_genres") or [[None]])[0][0]
     film_genres = [g for g in (film.get("genres") or [])]
     genre_overlap = [g for g in film_genres if g in user_genres]
 
@@ -1815,8 +1814,6 @@ def _mechanical_reason(profile: dict, film: dict,
         if reihe_quelle is None:
             film_cols = []
 
-    recent = profile.get("recent_movies") or []
-    favs = profile.get("favorite_movies") or []
     avg_year = profile.get("avg_year")
     film_year = film.get("year")
     rating = film.get("rating") or 0
@@ -2403,10 +2400,10 @@ def quiz_recommend(user_id: int, answers: dict, n: int = 3,
     profile = build_profile(user_id)
     seen = profile["seen_ids"]
 
-    # Pull a wide candidate pool — chroma-side filter on type
-    chroma_filter = media_type if media_type in ("movie", "series") else None
+    # Pull a wide candidate pool — the vector search filters on type
+    typ_filter = media_type if media_type in ("movie", "series") else None
     sicht = sichtbarkeit.laden(user_id)
-    raw = search_by_text(query, k=60, media_type=chroma_filter,
+    raw = search_by_text(query, k=60, media_type=typ_filter,
                          exclude_ids=sicht.verborgen())
     hydrated = sicht.filtern(_hydrate(raw))
 
@@ -2529,7 +2526,7 @@ def weekly_series_pick(user_id: int, sprache: Optional[str] = None) -> dict:
 
     Strategy:
       1. Build user profile, embed query.
-      2. Pull top-K series from chroma filtered to type='series'.
+      2. Pull top-K series from the vector store filtered to type='series'.
       3. Drop those the user is already engaged with (watching/completed/
          favorite) — this is the "discover something new" slot.
       4. Diversity: prefer a different genre than last week's pick.

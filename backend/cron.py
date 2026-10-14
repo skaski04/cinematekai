@@ -516,8 +516,8 @@ def job_tmdb_refresh() -> dict:
 
 
 def job_weekly_series() -> dict:
-    """Recompute the weekly-series cache for every user. Cheap (single chroma
-    query each), reuses ISO-week cache key."""
+    """Recompute the weekly-series cache for every user. Cheap (single vector
+    search each), reuses ISO-week cache key."""
     from recommendations import weekly_series_pick
     with get_session() as s:
         users = s.exec(select(User)).all()
@@ -610,8 +610,8 @@ def job_prune_stale() -> dict:
     # Die Vektoren erst NACH dem Commit: Episoden, deren Serie gerade in
     # diesem Lauf verschwunden ist, sind dann schon aus der Datenbank weg und
     # verlieren im selben Durchgang auch ihren Vektor.
-    # Eigenes try/except, weil der Import von embeddings den Chroma-Client
-    # hochzieht. Faellt der aus, soll das aufgeraeumte Datenbank-Ergebnis
+    # Eigenes try/except, weil der Import von embeddings den Vektorspeicher
+    # mitbringt. Faellt der aus, soll das aufgeraeumte Datenbank-Ergebnis
     # trotzdem zurueckkommen statt den ganzen Job als Fehler zu melden.
     try:
         from embeddings import verwaiste_vektoren_entfernen

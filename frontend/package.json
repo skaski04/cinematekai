@@ -1,6 +1,6 @@
 {
   "name": "cinematekai-frontend",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -9,9 +9,15 @@
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.8.0",
-    "@sveltejs/vite-plugin-svelte": "^4.0.0",
-    "svelte": "^5.1.0",
-    "vite": "^5.4.9"
+    "@sveltejs/kit": "^2.70.3",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "svelte": "^5.57.2",
+    "vite": "^6.4.4"
+  },
+  "//": "overrides.cookie: SvelteKit 2 haengt bis zur letzten 2.x-Version an cookie ^0.6.0 (GHSA-pxg6-pf52-xh8x, behoben in 0.7.0). 0.7 hat dieselbe API (parse/serialize) und prueft nur Namen, Pfad und Domain strenger. Entfernen, sobald SvelteKit selbst cookie >= 0.7 mitbringt (erst SvelteKit 3).",
+  "overrides": {
+    "@sveltejs/kit": {
+      "cookie": "^0.7.2"
+    }
   }
 }
